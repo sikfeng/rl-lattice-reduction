@@ -136,7 +136,10 @@ class BKZEnvironment:
             # Generate new random basis
             self.M, self.shortest_vector = self._generate_random_basis("uniform")
 
+        if type(self.shortest_vector) is torch.Tensor:
+            self.shortest_vector = self.shortest_vector.cpu()
         self.optimal_length = np.linalg.norm(self.shortest_vector)
+        
         self.bkz = BKZReduction(self.M)
         self.initial_length = min(v.norm() for v in self.M)
         self.best_achieved = self.initial_length

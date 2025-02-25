@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Union
 
 
 from tensordict import TensorDict
@@ -142,11 +142,11 @@ class DQNAgent(nn.Module):
                 q_values = self.policy_net(state)
                 return q_values.argmax()
 
-    def update(self) -> Optional[float]:
+    def update(self, device: Union[torch.device, str]) -> None:
         if len(self.replay_buffer) < self.dqn_config.batch_size:
             return None
         
-        batch = self.replay_buffer.sample(self.dqn_config.batch_size)
+        batch = self.replay_buffer.sample(self.dqn_config.batch_size).to(device)
         states = batch["state"].flatten(0, 1)
         actions = batch["action"].flatten(0, 1)
         rewards = batch["reward"].flatten(0, 1)
@@ -181,7 +181,7 @@ class DQNAgent(nn.Module):
 
         return loss.item()
 
-    def train_step(self, batch: TensorDict, device: str) -> float:
+    def train_step(self, batch: TensorDict, device: Union[torch.device, str]) -> float:
         self.train()
 
         # Unpack batch data
@@ -189,7 +189,7 @@ class DQNAgent(nn.Module):
         shortest_vector = batch['shortest_vector'] # [batch_size, n_dim]
         
         # Reset environment
-        env = BKZEnvironment(self.ppo_config.env_config)
+        env = BKZEnvironment(self.dqn_config.env_config)
         state, _ = env.reset(options={'basis': basis.squeeze(), 'shortest_vector': shortest_vector.squeeze()})
         done = False
 
@@ -220,10 +220,10 @@ class DQNAgent(nn.Module):
             state = next_state
         
         # Update agent
-        avg_reward = self.update()
+        avg_reward = self.update(device)
         return avg_reward
 
-    def evaluate(self, dataloader: DataLoader, device: torch.device):
+    def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]):
         self.eval()
         env = BKZEnvironment(self.dqn_config.env_config)
         

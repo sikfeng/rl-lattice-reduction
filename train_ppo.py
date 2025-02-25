@@ -48,7 +48,7 @@ def main():
         device = torch.device("cpu")
 
     # Define dataset parameters
-    dimension = 8  # Must match environment's basis_dim
+    dimension = 4
     data_dir = Path("random_bases")
     distribution_type = "uniform"
 
@@ -65,7 +65,7 @@ def main():
     # Environment and agent configuration
     env_config = BKZEnvConfig(basis_dim=dimension, min_block_size=2, max_block_size=2)
     ppo_config = PPOConfig(env_config=env_config)
-    agent = PPOAgent(ppo_config=ppo_config)
+    agent = PPOAgent(ppo_config=ppo_config).to(device)
     agent.train()
 
     total_params = sum(p.numel() for p in agent.parameters())

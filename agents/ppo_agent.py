@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Union
 
 
 from tensordict import TensorDict
@@ -80,8 +80,7 @@ class ActorCritic(nn.Module):
         )
 
     def forward(self, tensordict: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
-        basis = tensordict["basis"]
-        basis_features = self.basis_processor(basis)
+        basis_features = self.basis_processor(tensordict["basis"])
 
         action_history = tensordict["action_history"].to(torch.long)
         action_history[(action_history == -1)] = self.action_dim
@@ -105,9 +104,7 @@ class PPOConfig:
         self.env_config = env_config if env_config is not None else BKZEnvConfig()
 
 class PPOAgent(nn.Module):
-    def __init__(
-        self, ppo_config: PPOConfig
-    ) -> None:
+    def __init__(self, ppo_config: PPOConfig) -> None:
         super().__init__()
         self.ppo_config = ppo_config
         self.action_dim = self.ppo_config.env_config.actions_n
@@ -154,12 +151,12 @@ class PPOAgent(nn.Module):
 
         return action, dist.log_prob(action), value
 
-    def update(self) -> None:
+    def update(self, device: Union[torch.device, str]) -> None:
         if len(self.replay_buffer) < self.ppo_config.batch_size:
             return None
         
         # Is there a nicer way to do the following?
-        batch = self.replay_buffer.sample(len(self.replay_buffer))
+        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(device)
         states = batch["state"].flatten(0, 1)
         next_states = batch["next_state"].flatten(0, 1)
         actions = batch["action"].flatten(0, 1)
@@ -253,7 +250,7 @@ class PPOAgent(nn.Module):
         self.replay_buffer.empty()
         return avg_reward
 
-    def train_step(self, batch: TensorDict, device: str) -> float:
+    def train_step(self, batch: TensorDict, device: Union[torch.device, str]) -> float:
         self.train()
 
         # Unpack batch data
@@ -273,7 +270,7 @@ class PPOAgent(nn.Module):
         # Run episode
         while not done: # should use step count as max
 
-            action, log_prob, value = self.get_action(state)
+            action, log_prob, _ = self.get_action(state)
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             
@@ -293,10 +290,10 @@ class PPOAgent(nn.Module):
             state = next_state
         
         # Update agent
-        avg_reward = self.update()
+        avg_reward = self.update(device)
         return avg_reward
 
-    def evaluate(self, dataloader: DataLoader, device: torch.device):
+    def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]):
         self.eval()
         env = BKZEnvironment(self.ppo_config.env_config)
         

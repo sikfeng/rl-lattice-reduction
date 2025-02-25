@@ -48,7 +48,7 @@ def main():
         device = torch.device("cpu")
 
     # Define dataset parameters
-    dimension = 10  # Must match environment's basis_dim
+    dimension = 4
     data_dir = Path("random_bases")
     distribution_type = "uniform"
 
@@ -65,7 +65,7 @@ def main():
     # Environment and agent configuration
     env_config = BKZEnvConfig(basis_dim=dimension, min_block_size=2, max_block_size=2)
     dqn_config = DQNConfig(env_config=env_config)
-    agent = DQNAgent(dqn_config=dqn_config)
+    agent = DQNAgent(dqn_config=dqn_config).to(device)
     agent.train()
 
     total_params = sum(p.numel() for p in agent.parameters())
@@ -77,11 +77,11 @@ def main():
 
     for epoch in tqdm(range(epochs)):
         for step, batch in enumerate(tqdm(train_loader)):
-            agent.train_step(batch)
+            agent.train_step(batch, device)
             
             # Evaluation
             if (step + 1) % 1000 == 0:
-                val_metrics = agent.evaluate(val_loader,device)
+                val_metrics = agent.evaluate(val_loader, device)
                 test_metrics = agent.evaluate(test_loader, device)
                 logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
                 
@@ -97,5 +97,5 @@ def main():
 
                 agent.train()
     
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
