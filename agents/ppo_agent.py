@@ -1,6 +1,5 @@
 import numpy as np
-from typing import Tuple, Union
-
+from typing import Dict, Tuple, Union
 
 from tensordict import TensorDict
 import torch
@@ -8,7 +7,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchrl.data import ListStorage, ReplayBuffer
-from torchrl.data.replay_buffers.storages import ListStorage
 from tqdm import tqdm
 
 from reduction_env import BKZEnvConfig, BKZEnvironment
@@ -60,7 +58,8 @@ class ActorCritic(nn.Module):
             nn.Linear(512, 512),
             nn.ReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, action_dim)
+            nn.Linear(512, action_dim),
+            nn.Softmax(dim=-1)
         )
         self.critic = nn.Sequential(
             nn.Dropout(p=dropout_p),
@@ -293,7 +292,7 @@ class PPOAgent(nn.Module):
         avg_reward = self.update(device)
         return avg_reward
 
-    def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]):
+    def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()
         env = BKZEnvironment(self.ppo_config.env_config)
         
