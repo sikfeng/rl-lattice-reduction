@@ -34,9 +34,9 @@ class QNetwork(nn.Module):
             nn.Linear(512, 256)
         )
         self.meta_processor = nn.Sequential(
-            nn.Embedding(action_dim + 1, 8, action_dim),
+            nn.Embedding(action_dim + 1, 32, action_dim),
             nn.Flatten(-2, -1),
-            nn.Linear(action_history_size * 8, 128),
+            nn.Linear(action_history_size * 32, 128),
             nn.ReLU(),
             nn.Dropout(dropout_p),
             nn.Linear(128, 128),

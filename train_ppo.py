@@ -48,7 +48,7 @@ def main():
         device = torch.device("cpu")
 
     # Define dataset parameters
-    dimension = 4
+    dimension = 8
     data_dir = Path("random_bases")
     distribution_type = "uniform"
 
@@ -63,17 +63,30 @@ def main():
     )
 
     # Environment and agent configuration
-    env_config = BKZEnvConfig(basis_dim=dimension, min_block_size=2, max_block_size=2)
+    env_config = BKZEnvConfig(basis_dim=dimension, min_block_size=2, max_block_size=dimension)
     ppo_config = PPOConfig(env_config=env_config)
     agent = PPOAgent(ppo_config=ppo_config).to(device)
-    agent.train()
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
     # Training loop
     epochs = 2
-    best_success = 0.0
+
+    val_metrics = agent.evaluate(val_loader, device)
+    test_metrics = agent.evaluate(test_loader, device)
+    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
+    
+    # Save model at every evaluation with details in the filename
+    filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
+    torch.save(agent.state_dict(), checkpoint_dir / filename)
+    
+    # Additionally, save the best model if the current success is higher than before
+    best_success = val_metrics['success_rate']
+    best_filename = "best_agent.pth"
+    torch.save(agent.state_dict(), checkpoint_dir / best_filename)
+
+    agent.train()
 
     for epoch in tqdm(range(epochs)):
         for step, batch in enumerate(tqdm(train_loader)):
