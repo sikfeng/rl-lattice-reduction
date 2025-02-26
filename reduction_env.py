@@ -20,7 +20,7 @@ def compute_log_defect(basis: IntegerMatrix) -> float:
     log_defect = log_prod_norms - log_det
     return log_defect
 
-class BKZReduction: # alternative implementation
+class BKZReduction:
     def __init__(self, A: IntegerMatrix):
         if not isinstance(A, IntegerMatrix):
             raise TypeError(f"Matrix must be IntegerMatrix but got {type(A)}")
@@ -43,27 +43,6 @@ class BKZReduction: # alternative implementation
                 self.A[kappa + i, j] = block_matrix[i, j]
 
         return self.A
-
-
-class BKZReduction2:
-    def __init__(self, A):
-        if not isinstance(A, IntegerMatrix):
-            raise TypeError(f"Matrix must be IntegerMatrix but got {type(A)}")
-
-        self.A = A
-        self.m = GSO.Mat(A, flags=GSO.INT_GRAM | GSO.ROW_EXPO, float_type="mpfr") # need GSO.INT_GRAM and float_type="mpfr" or the precision will cry
-        self.lll_obj = LLL.Reduction(self.m)
-        self.m.update_gso() # Update Gram Schmidt coefficients
-        self.auto_abort = BKZ.AutoAbort(self.m, self.A.nrows) # heuristic check if BKZ can be terminated. Checks if the slope of the basis hasn't decreased in a while. 
-
-    def __call__(self, kappa, block_size):
-        """Perform LLL reduction on a block.
-
-        :param kappa: row index
-        :param block_size: an integer >= 2
-
-        """
-        self.lll_obj(kappa, kappa, kappa + block_size)
 
 
 @dataclass
@@ -114,7 +93,7 @@ class BKZEnvironment:
 
     def _get_observation(self) -> Dict[str, torch.Tensor]:
         basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
-        basis = torch.tensor(self.M.to_matrix(basis), dtype=torch.float32)
+        basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
         last_actions = torch.tensor(self.action_history[-self.config.action_history_size:], dtype=torch.float32)
         history = torch.cat([torch.full((self.config.action_history_size - last_actions.size(0),), -1.0), last_actions])
@@ -125,43 +104,33 @@ class BKZEnvironment:
         }
 
     def _get_info(self) -> Dict[str, Any]:
-        return {"log_defect": compute_log_defect(self.M)}
+        return {"log_defect": compute_log_defect(self.basis)}
 
     def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         if options is not None and 'basis' in options and 'shortest_vector' in options:
             # Use provided basis and shortest vector
-            self.M = IntegerMatrix.from_matrix(options['basis'].int().tolist())
+            self.basis = IntegerMatrix.from_matrix(options['basis'].int().tolist())
             self.shortest_vector = options['shortest_vector']
         else:
             # Generate new random basis
-            self.M, self.shortest_vector = self._generate_random_basis("uniform")
+            self.basis, self.shortest_vector = self._generate_random_basis("uniform")
 
         if type(self.shortest_vector) is torch.Tensor:
             self.shortest_vector = self.shortest_vector.cpu()
         self.optimal_length = np.linalg.norm(self.shortest_vector)
         
-        self.bkz = BKZReduction(self.M)
-        self.initial_length = min(v.norm() for v in self.M)
+        self.bkz = BKZReduction(self.basis)
+        self.initial_length = min(v.norm() for v in self.basis)
         self.best_achieved = self.initial_length
         self.start_time = time.time()
         self.action_history = []
+        self.log_defect_history = [compute_log_defect(self.basis)]
+        self.current_step = 0
 
         return self._get_observation(), self._get_info()
 
     def action_to_block(self, action: int) -> Tuple[int, int]:
         """Convert single action index to block size and start position"""
-        '''
-        n_block_actions = self.config.max_block_size - self.config.min_block_size + 1
-
-        # Decode action index
-        block_action = action % n_block_actions
-        row_index_action = action // n_block_actions
-
-        block_size = block_action + self.config.min_block_size
-        start_pos = row_index_action
-
-        return start_pos, block_size
-        '''
         assert action < self.config.actions_n, f"Action {action} provided, but only {self.config.actions_n} actions available!"
 
         for i in range(self.config.basis_dim):
@@ -185,33 +154,58 @@ class BKZEnvironment:
         # Check termination conditions
         self.terminated = self._check_termination()
         self.truncated = self._check_truncation()
+        self.current_step += 1
 
         return self._get_observation(), self._compute_reward(), self._check_termination(), self._check_truncation(), self._get_info()
 
     def _compute_reward(self) -> float:
         reward = 0.0
         
-        time_penalty = self.config.time_penalty_weight * np.log(1 + (time.time() - self.start_time))
+        # Penalry for time taken
+        elapsed_time = time.time() - self.start_time
+        time_penalty = self.config.time_penalty_weight * np.log(1 + elapsed_time) / (1 + 0.1 * elapsed_time)
         reward -= time_penalty
 
-        if (len(self.action_history) > 1) and (self.action_history[-1] == self.action_history[-2]):
-            repeats = sum(1 for _ in takewhile(lambda x: x == self.action_history[-1], reversed(self.action_history)))
-            repeat_action_penalty = 10 ** repeats
-            reward -= repeat_action_penalty
+        # Penalty for repeated actions
+        if len(self.action_history) > 1:
+            if self.action_history[-1] == self.action_history[-2]:
+                repeats = sum(1 for _ in takewhile(lambda x: x == self.action_history[-1],
+                                                reversed(self.action_history)))
 
-        log_orthogonality_defect = compute_log_defect(self.M)
-        reward -= log_orthogonality_defect
+                # Exponential penalty for repeated actions
+                repeat_action_penalty = min(2.0 * (2.0 ** repeats), 100.0)
+                reward -= repeat_action_penalty
+
+        # Reward for improvement of log defect
+        current_log_defect = compute_log_defect(self.basis)
+        if len(self.action_history) > 0:
+            # Calculate improvement from last step
+            previous_log_defect = self.log_defect_history[-1]
+            defect_improvement = previous_log_defect - current_log_defect
+            # Apply a bonus for improving the defect
+            if defect_improvement > 0:
+                # Larger rewards for bigger improvements with diminishing returns
+                improvement_reward = 10.0 * (1.0 - np.exp(-5.0 * defect_improvement))
+                reward += improvement_reward
+            # Small penalty for making the defect worse (should be impossible with LLL)
+            elif defect_improvement < 0:
+                reward -= 1.0 * min(abs(defect_improvement), 1.0)
 
         return reward
 
     def _check_termination(self):
         """Check if episode has terminated"""
-        #return False
-        return (
-            (self.best_achieved - self.optimal_length < 1e-6)
-            or (len(self.action_history) >= self.config.action_history_size and all(x == self.action_history[-1] for x in self.action_history[-self.config.action_history_size:]))
-            #or self.bkz.auto_abort.test_abort()
-        )
+
+        if len(self.log_defect_history) > self.config.action_history_size:
+            recent_defects = self.log_defect_history[-self.config.action_history_size:]
+            if max(recent_defects) - min(recent_defects) < 1e-6:
+                return True
+
+        if (len(self.action_history) >= self.config.action_history_size and
+            all(x == self.action_history[-1] for x in self.action_history[-self.config.action_history_size:])):
+            return True
+
+        return False
 
     def _check_truncation(self):
         """Check if episode has been truncated due to time limit"""
