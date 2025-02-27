@@ -78,7 +78,7 @@ def load_lattice_dataloader(data_dir, dimension, distribution_type,
     Returns:
         DataLoader: PyTorch DataLoader for the specified dataset
     """
-    file_path = Path(data_dir) / f"{split}_dim_{dimension}_type_{distribution_type}.npy"
+    file_path = Path(data_dir) / f"dim_{dimension}_type_{distribution_type}_{split}.npy"
     
     if not file_path.exists():
         raise FileNotFoundError(f"Dataset file not found: {file_path}")
