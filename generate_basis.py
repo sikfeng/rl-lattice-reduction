@@ -1,10 +1,10 @@
+import argparse
 from functools import partial
 import multiprocessing as mp
 from pathlib import Path
 
 from fpylll import IntegerMatrix, SVP, LLL
 import numpy as np
-from scipy.linalg import expm
 from tqdm import tqdm
 
 
@@ -53,7 +53,7 @@ def log_defect(basis):
     det = abs(np.linalg.det(basis))
     return log_prod_norms - np.log(det) if det != 0 else float('inf')
 
-def generate_uniform(n, low=0, high=100):
+def generate_uniform(n, low=-50, high=50):
     """
     Generate a uniform random integer matrix.
     
@@ -69,39 +69,11 @@ def generate_uniform(n, low=0, high=100):
     """
     return np.random.randint(low=low, high=high, size=(n, n))
 
-def generate_ajtai(n, sigma=10):
-    """
-    Inspired by Ajtai (1996):
-    1) Sample B' with i.i.d. entries from {0, 1, ..., q-1}/q.
-    2) Return the dual basis B = (B')^(-T) = (B'^-1)^T.
-
-    Note: We assume B' is invertible. If it is singular, we resample.
-    """
-    while True:
-        # Sample integer matrix in [0, q-1], then scale by 1/q
-        B_prime_int = np.random.randint(0, q, size=(n, n))
-        B_prime = B_prime_int.astype(float) / q
-        
-        # Check invertibility (condition number not too large)
-        if np.linalg.cond(B_prime) < 1 / np.finfo(float).eps:
-            break
-
-    # Dual basis is inverse-transpose
-    B = np.linalg.inv(B_prime).T
-    return B
-
-##################################################
-
-num_train_samples = 10_000
-num_val_samples = 4_000
-num_test_samples = 4_000
 
 def func(_, n, distribution):
     np.random.seed()
     if distribution == 'uniform':
         basis = generate_uniform(n)
-    elif distribution == 'ajtai':
-        basis = generate_ajtai(n)
     else:
         raise ValueError("Invalid distribution type")
     
@@ -112,28 +84,30 @@ def func(_, n, distribution):
     # Store original basis, shortest vector, reduced basis and log orthogonality defect together.
     return {"basis": basis, "shortest_vector": shortest_vector, "lll_reduced_basis": lll_reduced_basis, "lll_log_defect": defect}
 
+def main():
+    parser = argparse.ArgumentParser(description="Generate random basis")
+    parser.add_argument("-d", "--dim", type=int, default=4)
+    parser.add_argument("--distribution", type=str, default="uniform")
+    parser.add_argument("--train_samples", type=int, default=10_000)
+    parser.add_argument("--val_samples", type=int, default=4_000)
+    parser.add_argument("--test_samples", type=int, default=4_000)
+    parser.add_argument("--processes", type=int, default=20)
+    args = parser.parse_args()
 
-# Create the output directory using pathlib
-output_dir = Path("random_bases")
-output_dir.mkdir(parents=True, exist_ok=True)
+    # Create the output directory using pathlib
+    output_dir = Path("random_bases")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-processes = 20
+    data_files = ['train', 'val', 'test']
+    num_samples = [args.train_samples, args.val_samples, args.test_samples]
 
-for n in [4, 6, 8, 10, 12, 14, 16]:
-    for distribution in ["uniform"]:
-        worker = partial(func, n=n, distribution=distribution)
+    worker = partial(func, n=args.dim, distribution=args.distribution)
+    for data_type, num_sample in zip(data_files, num_samples):
+        with mp.Pool(args.processes) as pool:
+            data = list(tqdm(pool.imap(worker, range(num_sample)), desc=f"Generating {data_type}, dim {args.dim}, {args.distribution} distribution", dynamic_ncols=True, total=num_sample))
+        np.save(f"random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy", data)
+        print(f"Saved random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy")
 
-        with mp.Pool(processes) as pool:
-            train_data = list(tqdm(pool.imap(worker, range(num_train_samples)), total=num_train_samples))
-        np.save(f"random_bases/train_dim_{n}_type_{distribution}.npy", train_data)
-        print(f"Saved random_bases/train_dim_{n}_type_{distribution}.npy")
 
-        with mp.Pool(processes) as pool:
-            val_data = list(tqdm(pool.imap(worker, range(num_val_samples)), total=num_val_samples))
-        np.save(f"random_bases/val_dim_{n}_type_{distribution}.npy", val_data)
-        print(f"Saved random_bases/val_dim_{n}_type_{distribution}.npy")
-
-        with mp.Pool(processes) as pool:
-            test_data = list(tqdm(pool.imap(worker, range(num_test_samples)), total=num_test_samples))
-        np.save(f"random_bases/test_dim_{n}_type_{distribution}.npy", test_data)
-        print(f"Saved random_bases/test_dim_{n}_type_{distribution}.npy")
+if __name__ == "__main__":
+    main()
