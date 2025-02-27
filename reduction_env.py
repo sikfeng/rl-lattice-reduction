@@ -3,7 +3,7 @@ from itertools import takewhile
 import time
 from typing import Any, Dict, Tuple, Optional
 
-from fpylll import BKZ, FPLLL, GSO, IntegerMatrix, LLL, SVP
+from fpylll import FPLLL, GSO, IntegerMatrix, LLL, SVP
 import numpy as np
 import torch
 
@@ -67,15 +67,6 @@ class BKZEnvConfig:
                     continue
                 self.actions_n += 1
 
-        '''def compute_actions_n(basis_dim: int, min_block_size: int, max_block_size: int) -> int:
-            # Ensure that max_block_size does not exceed basis_dim.
-            U = min(max_block_size, basis_dim)
-            L = min_block_size
-            # Number of allowed block sizes
-            n_sizes = U - L + 1
-            # Closed form: actions_n = ((U-L+1) * (2*(basis_dim+1) - (U+L))) // 2
-            actions_n = (n_sizes * (2 * (basis_dim + 1) - (U + L))) // 2
-            return actions_n'''
 
 class BKZEnvironment:
     def __init__(self, config: BKZEnvConfig):
@@ -126,6 +117,7 @@ class BKZEnvironment:
         self.action_history = []
         self.log_defect_history = [compute_log_defect(self.basis)]
         self.current_step = 0
+        self.previous_shortest_length = self.initial_length
 
         return self._get_observation(), self._get_info()
 
@@ -146,7 +138,7 @@ class BKZEnvironment:
         start_pos, block_size = self.action_to_block(action)
 
         # Execute reduction step on selected block
-        self.bkz(start_pos, min(block_size, self.config.basis_dim - start_pos)) #################
+        self.bkz(start_pos, block_size)
 
         # Update state
         self.action_history.append(action)
@@ -196,6 +188,9 @@ class BKZEnvironment:
     def _check_termination(self):
         """Check if episode has terminated"""
 
+        if len(self.log_defect_history) < self.config.action_history_size:
+            return False
+
         if len(self.log_defect_history) > self.config.action_history_size:
             recent_defects = self.log_defect_history[-self.config.action_history_size:]
             if max(recent_defects) - min(recent_defects) < 1e-6:
@@ -209,8 +204,14 @@ class BKZEnvironment:
 
     def _check_truncation(self):
         """Check if episode has been truncated due to time limit"""
-        return (len(self.action_history) >= self.config.max_steps) or (time.time() - self.start_time >= self.config.time_limit)
+        if len(self.action_history) >= self.config.max_steps:
+            return True
+        
+        if time.time() - self.start_time >= self.config.time_limit:
+            return True
 
+        return False
+    
     ### random basis generation ###
 
     def _generate_random_basis(self, distribution="uniform"):
