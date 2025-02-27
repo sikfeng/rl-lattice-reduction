@@ -1,3 +1,4 @@
+import argparse
 import datetime
 import logging
 from pathlib import Path
@@ -16,15 +17,38 @@ from load_dataset import load_lattice_dataloaders
 def main():
     FPLLL.set_precision(1000)
 
-    seed_val = 0
-    random.seed(seed_val)
-    np.random.seed(seed_val)
-    torch.manual_seed(seed_val)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--eval-interval", type=int, default=1000)
+    parser.add_argument("-d", "--dim", type=int, default=4)
+    parser.add_argument("--distribution", type=str, default="uniform")
+    parser.add_argument("--min_block_size", type=int, default=2)
+    parser.add_argument("--max_block_size", type=int)
+    args = parser.parse_args()
+
+    # Set default for max_block_size
+    if args.max_block_size is None:
+        args.max_block_size = args.dim
+
+    # Validation
+    if args.min_block_size < 2:
+        raise ValueError("min_block_size must be at least 2.")
+    if args.max_block_size > args.dim:
+        raise ValueError("max_block_size must be at most dim.")
+    if args.min_block_size > args.max_block_size:
+        raise ValueError("min_block_size cannot be greater than max_block_size.")
+
+    print(args)
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     if torch.cuda.is_available():    
-        torch.cuda.manual_seed_all(seed_val)
+        torch.cuda.manual_seed_all(args.seed)
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    checkpoint_dir = Path(f"checkpoint/ppo-model-{start_timestamp}")
+    checkpoint_dir = Path(f"checkpoint/dqn-model_dim-{args.dim}_{start_timestamp}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -48,22 +72,20 @@ def main():
         device = torch.device("cpu")
 
     # Define dataset parameters
-    dimension = 8
     data_dir = Path("random_bases")
-    distribution_type = "uniform"
 
     # Create DataLoaders
     train_loader, val_loader, test_loader = load_lattice_dataloaders(
         data_dir=data_dir,
-        dimension=dimension,
-        distribution_type=distribution_type,
+        dimension=args.dim,
+        distribution_type=args.distribution,
         batch_size=1,
         shuffle=True,
         device=device
     )
 
     # Environment and agent configuration
-    env_config = BKZEnvConfig(basis_dim=dimension, min_block_size=2, max_block_size=dimension)
+    env_config = BKZEnvConfig(basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size)
     dqn_config = DQNConfig(env_config=env_config)
     agent = DQNAgent(dqn_config=dqn_config).to(device)
 
@@ -71,8 +93,6 @@ def main():
     logging.info(f"Total parameters: {total_params}")
 
     # Training loop
-    epochs = 2
-
     val_metrics = agent.evaluate(val_loader, device)
     test_metrics = agent.evaluate(test_loader, device)
     logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
@@ -88,21 +108,19 @@ def main():
 
     agent.train()
 
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm(range(args.epochs)):
         for step, batch in enumerate(tqdm(train_loader)):
             agent.train_step(batch, device)
             
             # Evaluation
-            if (step + 1) % 1000 == 0:
+            if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
                 test_metrics = agent.evaluate(test_loader, device)
                 logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
                 
-                # Save model at every evaluation with details in the filename
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
                 
-                # Additionally, save the best model if the current success is higher than before
                 if val_metrics['success_rate'] > best_success:
                     best_success = val_metrics['success_rate']
                     best_filename = "best_agent.pth"
