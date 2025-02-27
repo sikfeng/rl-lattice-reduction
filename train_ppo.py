@@ -93,8 +93,7 @@ def main():
 
     # Training loop
     val_metrics = agent.evaluate(val_loader, device)
-    test_metrics = agent.evaluate(test_loader, device)
-    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
+    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}")
     
     # Save model at every evaluation with details in the filename
     filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
@@ -114,8 +113,7 @@ def main():
             # Evaluation
             if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
-                test_metrics = agent.evaluate(test_loader, device)
-                logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Test Success: {test_metrics['success_rate']:.2f}")
+                logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}")
                 
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
@@ -126,6 +124,12 @@ def main():
                     torch.save(agent.state_dict(), checkpoint_dir / best_filename)
 
                 agent.train()
+
+    logging.info(f"Best Success: {best_success:.2f}")
+    best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+    best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
+    test_metrics = best_agent.evaluate(test_loader, device)
+    logging.info(f"Test Success: {test_metrics['success_rate']:.2f}")
 
 if __name__ == "__main__":
     main()
