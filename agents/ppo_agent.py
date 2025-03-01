@@ -302,7 +302,7 @@ class PPOAgent(nn.Module):
             success_count = 0
             num_samples = len(dataloader)
             
-            for batch in tqdm(dataloader):
+            for batch in tqdm(dataloader, dynamic_ncols=True):
                 # Unpack batch data
                 basis = batch['basis'].squeeze()
                 shortest_vector = batch['shortest_vector'].squeeze()
