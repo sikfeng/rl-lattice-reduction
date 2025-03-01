@@ -107,8 +107,8 @@ def main():
 
     agent.train()
 
-    for epoch in tqdm(range(args.epochs)):
-        for step, batch in enumerate(tqdm(train_loader)):
+    for epoch in tqdm(range(args.epochs), dynamic_ncols=True):
+        for step, batch in enumerate(tqdm(train_loader), dynamic_ncols=True):
             agent.train_step(batch, device)
             
             # Evaluation
