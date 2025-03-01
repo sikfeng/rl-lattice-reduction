@@ -9,9 +9,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from reduction_env import BKZEnvConfig
 from agents.ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
+from reduction_env import BKZEnvConfig
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--eval-interval", type=int, default=1000)
     parser.add_argument("-d", "--dim", type=int, default=4)
-    parser.add_argument("--distribution", type=str, default="uniform")
+    parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform"])
     parser.add_argument("--min_block_size", type=int, default=2)
     parser.add_argument("--max_block_size", type=int)
     args = parser.parse_args()
@@ -93,12 +93,12 @@ def main():
 
     # Training loop
     val_metrics = agent.evaluate(val_loader, device)
-    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}")
-    
+    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+
     # Save model at every evaluation with details in the filename
     filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
     torch.save(agent.state_dict(), checkpoint_dir / filename)
-    
+
     # Additionally, save the best model if the current success is higher than before
     best_success = val_metrics['success_rate']
     best_filename = "best_agent.pth"
@@ -113,11 +113,11 @@ def main():
             # Evaluation
             if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
-                logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}")
-                
+                logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
-                
+
                 if val_metrics['success_rate'] > best_success:
                     best_success = val_metrics['success_rate']
                     best_filename = "best_agent.pth"
@@ -125,11 +125,11 @@ def main():
 
                 agent.train()
 
-    logging.info(f"Best Success: {best_success:.2f}")
+    logging.info(f"Best Val Success: {best_success:.2f}")
     best_agent = PPOAgent(ppo_config=ppo_config).to(device)
     best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
     test_metrics = best_agent.evaluate(test_loader, device)
-    logging.info(f"Test Success: {test_metrics['success_rate']:.2f}")
+    logging.info(f"Test Success: {test_metrics['success_rate']:.2f}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
 
 if __name__ == "__main__":
     main()
