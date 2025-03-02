@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from agents.ddpg_agent import DDPGAgent, DDPGConfig
+from agents.dqn_agent import DQNAgent, DQNConfig
 from agents.ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
 from reduction_env import BKZEnvConfig
@@ -22,9 +24,11 @@ def main():
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--eval-interval", type=int, default=1000)
     parser.add_argument("-d", "--dim", type=int, default=4)
-    parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform"])
+    parser.add_argument("--distribution", type=str,
+                        default="uniform", choices=["uniform"])
     parser.add_argument("--min_block_size", type=int, default=2)
     parser.add_argument("--max_block_size", type=int)
+    parser.add_argument("--model", type=str, choices=["ddpg", "dqn", "ppo"])
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -37,18 +41,27 @@ def main():
     if args.max_block_size > args.dim:
         raise ValueError("max_block_size must be at most dim.")
     if args.min_block_size > args.max_block_size:
-        raise ValueError("min_block_size cannot be greater than max_block_size.")
+        raise ValueError(
+            "min_block_size cannot be greater than max_block_size.")
 
     print(args)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if torch.cuda.is_available():    
+    if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    checkpoint_dir = Path(f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
+    if args.model == "ddpg":
+        checkpoint_dir = Path(
+            f"checkpoint/ddpg-model_dim-{args.dim}_{start_timestamp}")
+    elif args.model == "dqn":
+        checkpoint_dir = Path(
+            f"checkpoint/dqn-model_dim-{args.dim}_{start_timestamp}")
+    elif args.model == "ppo":
+        checkpoint_dir = Path(
+            f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -63,10 +76,12 @@ def main():
     logging.info(f"Saving run to checkpoint directory: {checkpoint_dir}")
     logging.info(f"Logging to: {checkpoint_dir / 'training.log'}")
 
-    if torch.cuda.is_available():    
+    if torch.cuda.is_available():
         device = torch.device("cuda")
-        logging.info(f'There are {torch.cuda.device_count()} GPU(s) available.')
-        logging.info('We will use the GPU: ' + str(torch.cuda.get_device_name(0)))
+        logging.info(
+            f'There are {torch.cuda.device_count()} GPU(s) available.')
+        logging.info('We will use the GPU: ' +
+                     str(torch.cuda.get_device_name(0)))
     else:
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
@@ -84,16 +99,25 @@ def main():
     )
 
     # Environment and agent configuration
-    env_config = BKZEnvConfig(basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size)
-    ppo_config = PPOConfig(env_config=env_config)
-    agent = PPOAgent(ppo_config=ppo_config).to(device)
+    env_config = BKZEnvConfig(
+        basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size)
+    if args.model == "ddpg":
+        ddpg_config = DDPGConfig(env_config=env_config)
+        agent = DDPGAgent(ddpg_config=ddpg_config).to(device)
+    elif args.model == "dqn":
+        dqn_config = DQNConfig(env_config=env_config)
+        agent = DQNAgent(dqn_config=dqn_config).to(device)
+    elif args.model == "ppo":
+        ppo_config = PPOConfig(env_config=env_config)
+        agent = PPOAgent(ppo_config=ppo_config).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
     # Training loop
     val_metrics = agent.evaluate(val_loader, device)
-    logging.info(f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+    logging.info(
+        f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
     # Save model at every evaluation with details in the filename
     filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
@@ -109,11 +133,12 @@ def main():
     for epoch in tqdm(range(args.epochs), dynamic_ncols=True):
         for step, batch in enumerate(tqdm(train_loader, dynamic_ncols=True)):
             agent.train_step(batch, device)
-            
+
             # Evaluation
             if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
-                logging.info(f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+                logging.info(
+                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
@@ -121,15 +146,25 @@ def main():
                 if val_metrics['success_rate'] > best_success:
                     best_success = val_metrics['success_rate']
                     best_filename = "best_agent.pth"
-                    torch.save(agent.state_dict(), checkpoint_dir / best_filename)
+                    torch.save(agent.state_dict(),
+                               checkpoint_dir / best_filename)
 
                 agent.train()
 
     logging.info(f"Best Val Success: {best_success:.2f}")
-    best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+
+    if args.model == "ddpg":
+        best_agent = DDPGAgent(ddpg_config=ddpg_config).to(device)
+    elif args.model == "dqn":
+        best_agent = DQNAgent(dqn_config=dqn_config).to(device)
+    elif args.model == "ppo":
+        best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+
     best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
     test_metrics = best_agent.evaluate(test_loader, device)
-    logging.info(f"Test Success: {test_metrics['success_rate']:.2f}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
+    logging.info(
+        f"Test Success: {test_metrics['success_rate']:.2f}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
+
 
 if __name__ == "__main__":
     main()
