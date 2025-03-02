@@ -20,6 +20,7 @@ def compute_log_defect(basis: IntegerMatrix) -> float:
     log_defect = log_prod_norms - log_det
     return log_defect
 
+
 class BKZReduction:
     def __init__(self, A: IntegerMatrix):
         if not isinstance(A, IntegerMatrix):
@@ -34,8 +35,9 @@ class BKZReduction:
         :param block_size: an integer >= 2
 
         """
-        block_matrix = self.A.submatrix(range(kappa, kappa + block_size), range(self.A.ncols))
-        
+        block_matrix = self.A.submatrix(
+            range(kappa, kappa + block_size), range(self.A.ncols))
+
         LLL.reduction(block_matrix)
 
         for i in range(block_size):
@@ -47,13 +49,14 @@ class BKZReduction:
 
 @dataclass
 class BKZEnvConfig:
-    max_steps: Optional[int] = None  # If not provided, will be set to 2 * basis_dim
-    min_block_size: int = None # inclusive
-    max_block_size: int = None # inclusive
+    # If not provided, will be set to 2 * basis_dim
+    max_steps: Optional[int] = None
+    min_block_size: int = None  # inclusive
+    max_block_size: int = None  # inclusive
     time_limit: float = 300
     basis_dim: int = None
     action_history_size: int = 10
-    
+
     time_penalty_weight: float = 1.0
 
     def __post_init__(self):
@@ -80,8 +83,10 @@ class BKZEnvironment:
         # For an ideal model, it should not have to use the action history,
         # but the model frequently repeats the immediate last action and gets stuck.
         # Hence, this is an attempt to teach the model not to do that.
-        last_actions = torch.tensor(self.action_history[-self.config.action_history_size:], dtype=torch.float32)
-        history = torch.cat([torch.full((self.config.action_history_size - last_actions.size(0),), -1.0), last_actions])
+        last_actions = torch.tensor(
+            self.action_history[-self.config.action_history_size:], dtype=torch.float32)
+        history = torch.cat([torch.full(
+            (self.config.action_history_size - last_actions.size(0),), -1.0), last_actions])
 
         return {
             "basis": basis,
@@ -93,15 +98,17 @@ class BKZEnvironment:
 
     def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
+        self.lll_log_defect = options["lll_log_defect"]
+        self.shortest_lll_basis_vector_length = options["shortest_lll_basis_vector_length"]
+        self.shortest_vector_length = options["shortest_vector_length"]
 
         self.bkz = BKZReduction(self.basis)
-        self.initial_length = min(v.norm() for v in self.basis)
-        self.best_achieved = self.initial_length
         self.start_time = time.time()
         self.action_history = []
         self.log_defect_history = [compute_log_defect(self.basis)]
+        self.shortest_length_history = [
+            options["shortest_original_basis_vector_length"]]
         self.current_step = 0
-        self.previous_shortest_length = self.initial_length
 
         return self._get_observation(), self._get_info()
 
@@ -135,14 +142,15 @@ class BKZEnvironment:
 
         # Penalty for time taken
         elapsed_time = time.time() - self.start_time
-        time_penalty = self.config.time_penalty_weight * np.log(1 + elapsed_time) / (1 + 0.1 * elapsed_time)
+        time_penalty = self.config.time_penalty_weight * \
+            np.log(1 + elapsed_time) / (1 + 0.1 * elapsed_time)
         reward -= time_penalty
 
         # Penalty for repeated actions
         if len(self.action_history) > 1:
             if self.action_history[-1] == self.action_history[-2]:
                 repeats = sum(1 for _ in takewhile(lambda x: x == self.action_history[-1],
-                                                reversed(self.action_history)))
+                                                   reversed(self.action_history)))
 
                 # Exponential penalty for repeated actions
                 repeat_action_penalty = min(2.0 * (2.0 ** repeats), 100.0)
@@ -152,18 +160,59 @@ class BKZEnvironment:
         current_log_defect = compute_log_defect(self.basis)
         self.log_defect_history.append(current_log_defect)
 
+        # Calculate current shortest vector length
+        current_shortest_length = min(v.norm() for v in self.basis)
+        self.shortest_length_history.append(current_shortest_length)
+
         if len(self.action_history) > 0:
             # Calculate improvement from last step for log defect
-            defect_improvement = self.log_defect_history[-2] - self.log_defect_history[-1]
+            defect_improvement = self.log_defect_history[-2] - \
+                self.log_defect_history[-1]
+
+            # Calculate improvement from last step for shortest vector length
+            length_improvement = self.shortest_length_history[-2] - \
+                self.shortest_length_history[-1]
+
+            # Normalize length improvement relative to optimal length
+            normalized_length_improvement = 0
+            if self.shortest_vector_length > 0:
+                # Compute how much closer we got to the optimal length
+                distance_to_optimal_before = self.shortest_length_history[-2] - \
+                    self.shortest_vector_length
+                distance_to_optimal_after = self.shortest_length_history[-1] - \
+                    self.shortest_vector_length
+                normalized_length_improvement = (
+                    distance_to_optimal_before - distance_to_optimal_after) / self.shortest_vector_length
 
             # Apply a bonus for improving the defect
             if defect_improvement > 0:
                 # Larger rewards for bigger improvements with diminishing returns
-                defect_reward = 10.0 * (1.0 - np.exp(-5.0 * defect_improvement))
+                defect_reward = 10.0 * \
+                    (1.0 - np.exp(-5.0 * defect_improvement))
                 reward += defect_reward
             # Small penalty for making the defect worse (should be impossible with LLL)
             elif defect_improvement < 0:
                 reward -= 1.0 * min(abs(defect_improvement), 1.0)
+
+            # Apply a bonus for reducing the shortest vector length
+            if length_improvement > 0:
+                # Reward for making vectors shorter
+                length_reward = 15.0 * \
+                    (1.0 - np.exp(-5.0 * normalized_length_improvement))
+                reward += length_reward
+
+            # Calculate proximity reward - how close we are to optimal
+            if self.shortest_vector_length > 0:
+                proximity_ratio = current_shortest_length / self.shortest_vector_length
+                # Reward gets better as we get closer to optimal length (ratio approaches 1)
+                if proximity_ratio < 5.0:  # Only reward if we're somewhat close
+                    proximity_reward = 5.0 * \
+                        (1.0 - abs(np.log(proximity_ratio)))
+                    reward += proximity_reward
+
+            # Add a small bonus for any action that improves either metric
+            if defect_improvement > 0 or length_improvement > 0:
+                reward += 1.0
 
         return reward
 
@@ -179,7 +228,7 @@ class BKZEnvironment:
                 return True
 
         if (len(self.action_history) >= self.config.action_history_size and
-            all(x == self.action_history[-1] for x in self.action_history[-self.config.action_history_size:])):
+                all(x == self.action_history[-1] for x in self.action_history[-self.config.action_history_size:])):
             return True
 
         return False
@@ -188,7 +237,7 @@ class BKZEnvironment:
         """Check if episode has been truncated due to time limit"""
         if len(self.action_history) >= self.config.max_steps:
             return True
-        
+
         if time.time() - self.start_time >= self.config.time_limit:
             return True
 
