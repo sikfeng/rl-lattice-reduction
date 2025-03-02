@@ -73,19 +73,13 @@ class BKZEnvironment:
         super().__init__()
         self.config = config
 
-        # Environment states
-        self.optimal_length = None
-        self.initial_length = None
-        self.best_achieved = None
-        self.action_history = []
-
-        # Initialize FPLLL objects
-        self.reset()
-
     def _get_observation(self) -> Dict[str, torch.Tensor]:
         basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
         basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
+        # For an ideal model, it should not have to use the action history,
+        # but the model frequently repeats the immediate last action and gets stuck.
+        # Hence, this is an attempt to teach the model not to do that.
         last_actions = torch.tensor(self.action_history[-self.config.action_history_size:], dtype=torch.float32)
         history = torch.cat([torch.full((self.config.action_history_size - last_actions.size(0),), -1.0), last_actions])
 
@@ -97,19 +91,9 @@ class BKZEnvironment:
     def _get_info(self) -> Dict[str, Any]:
         return {"log_defect": compute_log_defect(self.basis)}
 
-    def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
-        if options is not None and 'basis' in options and 'shortest_vector' in options:
-            # Use provided basis and shortest vector
-            self.basis = IntegerMatrix.from_matrix(options['basis'].int().tolist())
-            self.shortest_vector = options['shortest_vector']
-        else:
-            # Generate new random basis
-            self.basis, self.shortest_vector = self._generate_random_basis("uniform")
+    def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+        self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
 
-        if type(self.shortest_vector) is torch.Tensor:
-            self.shortest_vector = self.shortest_vector.cpu()
-        self.optimal_length = np.linalg.norm(self.shortest_vector)
-        
         self.bkz = BKZReduction(self.basis)
         self.initial_length = min(v.norm() for v in self.basis)
         self.best_achieved = self.initial_length
@@ -121,29 +105,25 @@ class BKZEnvironment:
 
         return self._get_observation(), self._get_info()
 
-    def action_to_block(self, action: int) -> Tuple[int, int]:
+    def _action_to_block(self, action: int) -> Tuple[int, int]:
         """Convert single action index to block size and start position"""
         assert action < self.config.actions_n, f"Action {action} provided, but only {self.config.actions_n} actions available!"
 
-        for i in range(self.config.basis_dim):
-            for j in range(self.config.min_block_size, self.config.max_block_size + 1):
-                if i + j > self.config.basis_dim:
+        action_ = action.clone()
+        for start_pos in range(self.config.basis_dim):
+            for block_size in range(self.config.min_block_size, self.config.max_block_size + 1):
+                if start_pos + block_size > self.config.basis_dim:
                     continue
-                if action == 0:
-                    return i, j
-                action -= 1
+                if action_ == 0:
+                    return start_pos, block_size
+                action_ -= 1
 
-    def step(self, action: int) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        # Decode action index
-        start_pos, block_size = self.action_to_block(action)
-
-        # Execute reduction step on selected block
+    def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+        start_pos, block_size = self._action_to_block(action)
         self.bkz(start_pos, block_size)
 
-        # Update state
         self.action_history.append(action)
 
-        # Check termination conditions
         self.terminated = self._check_termination()
         self.truncated = self._check_truncation()
         self.current_step += 1
@@ -152,8 +132,8 @@ class BKZEnvironment:
 
     def _compute_reward(self) -> float:
         reward = 0.0
-        
-        # Penalry for time taken
+
+        # Penalty for time taken
         elapsed_time = time.time() - self.start_time
         time_penalty = self.config.time_penalty_weight * np.log(1 + elapsed_time) / (1 + 0.1 * elapsed_time)
         reward -= time_penalty
@@ -170,15 +150,17 @@ class BKZEnvironment:
 
         # Reward for improvement of log defect
         current_log_defect = compute_log_defect(self.basis)
+        self.log_defect_history.append(current_log_defect)
+
         if len(self.action_history) > 0:
-            # Calculate improvement from last step
-            previous_log_defect = self.log_defect_history[-1]
-            defect_improvement = previous_log_defect - current_log_defect
+            # Calculate improvement from last step for log defect
+            defect_improvement = self.log_defect_history[-2] - self.log_defect_history[-1]
+
             # Apply a bonus for improving the defect
             if defect_improvement > 0:
                 # Larger rewards for bigger improvements with diminishing returns
-                improvement_reward = 10.0 * (1.0 - np.exp(-5.0 * defect_improvement))
-                reward += improvement_reward
+                defect_reward = 10.0 * (1.0 - np.exp(-5.0 * defect_improvement))
+                reward += defect_reward
             # Small penalty for making the defect worse (should be impossible with LLL)
             elif defect_improvement < 0:
                 reward -= 1.0 * min(abs(defect_improvement), 1.0)
@@ -211,16 +193,3 @@ class BKZEnvironment:
             return True
 
         return False
-    
-    ### random basis generation ###
-
-    def _generate_random_basis(self, distribution="uniform"):
-        if distribution == "uniform":
-            return self._generate_random_basis_uniform()
-        else:
-            raise ValueError("Invalid distribution \"%s\" provided!", distribution)
-    
-    def _generate_random_basis_uniform(self):
-        random_basis = IntegerMatrix.random(self.config.basis_dim, "uniform", bits=10)
-        random_shortest = SVP.shortest_vector(random_basis)
-        return random_basis, random_shortest
