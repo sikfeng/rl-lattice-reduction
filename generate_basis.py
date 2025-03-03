@@ -56,6 +56,18 @@ def log_defect(basis):
     return log_prod_norms - np.log(det) if det != 0 else float('inf')
 
 
+def gaussian_heuristic(basis: np.ndarray):
+    n = basis.shape[0]
+
+    gram_matrix = np.dot(basis, basis.T)
+    det = np.abs(np.linalg.det(gram_matrix))
+    vol_L = np.sqrt(det)
+
+    # gh(L) = sqrt(n / (2 * pi * e)) * Vol(L)^(1 / n)
+    gh = np.sqrt(n / (2 * np.pi * np.e)) * vol_L**(1 / n)
+    return gh
+
+
 def generate_uniform(n, low=-50, high=50):
     """
     Generate a uniform random integer matrix.
@@ -101,6 +113,9 @@ def func(_, n, distribution):
     lll_basis_vector_lengths = np.linalg.norm(lll_reduced_basis, axis=1)
     shortest_lll_basis_vector_length = np.min(lll_basis_vector_lengths)
 
+    # Calculate Gaussian heuristic
+    shortest_vector_length_gh = gaussian_heuristic(basis)
+
     # Store all the data
     return {
         "basis": basis,
@@ -108,7 +123,8 @@ def func(_, n, distribution):
         "original_log_defect": original_log_defect,
         "lll_log_defect": defect,
         "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
-        "shortest_vector_length": shortest_vector_length
+        "shortest_vector_length": shortest_vector_length,
+        "shortest_vector_length_gh": shortest_vector_length_gh,
     }
 
 
