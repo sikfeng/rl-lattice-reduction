@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from itertools import takewhile
+import multiprocessing as mp
 import time
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from fpylll import FPLLL, GSO, IntegerMatrix, LLL, SVP
+from fpylll import FPLLL, GSO, IntegerMatrix, LLL
 import numpy as np
+from tensordict import TensorDict
 import torch
 
 
@@ -56,6 +58,7 @@ class BKZEnvConfig:
     time_limit: float = 300
     basis_dim: int = None
     action_history_size: int = 10
+    batch_size: int = 1
 
     time_penalty_weight: float = 1.0
 
@@ -242,3 +245,107 @@ class BKZEnvironment:
             return True
 
         return False
+
+
+class BKZWorker(mp.Process):
+    def __init__(self, config: BKZEnvConfig, input_queue: mp.Queue, output_queue: mp.Queue):
+        super().__init__()
+        self.config = config
+        self.input_queue = input_queue
+        self.output_queue = output_queue
+        self.env = BKZEnvironment(config)
+
+    def run(self):
+        while True:
+            cmd, data = self.input_queue.get()
+            if cmd == 'reset':
+                obs, info = self.env.reset(data)
+                self.output_queue.put((obs, info))
+            elif cmd == 'step':
+                action_idx = data
+                obs, reward, terminated, truncated, info = self.env.step(
+                    torch.tensor(action_idx))
+                self.output_queue.put(
+                    (obs, reward, terminated, truncated, info))
+            elif cmd == 'close':
+                break
+        self.input_queue.close()
+        self.output_queue.close()
+
+
+class VectorizedReductionEnvironment:
+    def __init__(self, config: BKZEnvConfig):
+        self.config = config
+        self.batch_size = config.batch_size
+
+        self.workers = []
+        self.input_queues = []
+        self.output_queues = []
+
+        for _ in range(self.batch_size):
+            in_q = mp.Queue()
+            out_q = mp.Queue()
+            worker = BKZWorker(config, in_q, out_q)
+            worker.start()
+            self.workers.append(worker)
+            self.input_queues.append(in_q)
+            self.output_queues.append(out_q)
+
+    def reset(self, options: TensorDict) -> List[Tuple[Dict[str, torch.Tensor], Dict[str, Any]]]:
+        options_list = options.unbind(dim=0)
+
+        for i in range(self.batch_size):
+            self.input_queues[i].put(('reset', options_list[i]))
+
+        results = [self.output_queues[i].get() for i in range(self.batch_size)]
+        states, infos = zip(*results)
+
+        states_ = {key: torch.stack([state[key]
+                                    for state in states]) for key in states[0]}
+        infos_ = {}
+        for key in infos[0]:
+            if isinstance(infos[0][key], torch.Tensor):
+                infos_[key] = torch.stack([info[key] for info in infos])
+            else:
+                infos_[key] = torch.Tensor([info[key] for info in infos])
+
+        return TensorDict(states_), TensorDict(infos_)
+
+    def step(self, actions: torch.Tensor):
+        for i in range(self.batch_size):
+            self.input_queues[i].put(('step', actions[i].item()))
+
+        results = [self.output_queues[i].get() for i in range(self.batch_size)]
+        next_states, rewards, terminateds, truncateds, infos = zip(*results)
+
+        next_states_ = TensorDict({key: torch.stack(
+            [state[key] for state in next_states]) for key in next_states[0]})
+        rewards_ = torch.tensor(rewards)
+        terminateds_ = torch.tensor(terminateds)
+        truncateds_ = torch.tensor(truncateds)
+        infos_ = {}
+        for key in infos[0]:
+            if isinstance(infos[0][key], torch.Tensor):
+                infos_[key] = torch.stack([info[key] for info in infos])
+            else:
+                infos_[key] = torch.Tensor([info[key] for info in infos])
+
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        terminateds = torch.tensor(terminateds, dtype=torch.bool)
+        truncateds = torch.tensor(truncateds, dtype=torch.bool)
+        return next_states_, rewards_, terminateds_, truncateds_, infos_
+
+    def close(self):
+        for i in range(self.batch_size):
+            self.input_queues[i].put(('close', None))
+
+        for worker in self.workers:
+            worker.join()
+
+        for q in self.input_queues:
+            q.close()
+            q.join_thread()
+
+        for q in self.output_queues:
+            q.close()
+            q.join_thread()
