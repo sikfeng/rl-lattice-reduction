@@ -44,7 +44,7 @@ class LatticeBaseDataset(Dataset):
 
         # Convert numpy arrays to PyTorch tensors and move to device
         tensor_sample = TensorDict({
-            key: torch.tensor(sample[key][np.newaxis], dtype=torch.float32) for key in sample
+            key: torch.tensor(sample[key], dtype=torch.float32) for key in sample
         }, batch_size=[])
 
         # Apply transforms if specified

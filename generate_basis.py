@@ -135,10 +135,9 @@ def main():
         with mp.Pool(args.processes) as pool:
             data = list(tqdm(pool.imap(worker, range(
                 num_sample)), desc=f"Generating {data_type}, dim {args.dim}, {args.distribution} distribution", dynamic_ncols=True, total=num_sample))
-        np.save(
-            f"random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy", data)
-        print(
-            f"Saved random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy")
+        filename = f"random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy"
+        np.save(filename, data)
+        print(f"Saved {filename}")
 
 
 if __name__ == "__main__":

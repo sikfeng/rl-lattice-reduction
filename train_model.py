@@ -26,8 +26,8 @@ def main():
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str,
                         default="uniform", choices=["uniform"])
-    parser.add_argument("--min_block_size", type=int, default=2)
-    parser.add_argument("--max_block_size", type=int)
+    parser.add_argument("--min-block-size", type=int, default=2)
+    parser.add_argument("--max-block-size", type=int)
     parser.add_argument("--model", type=str, choices=["ddpg", "dqn", "ppo"])
     args = parser.parse_args()
 
