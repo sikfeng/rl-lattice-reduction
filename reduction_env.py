@@ -1,4 +1,3 @@
-import cloudpickle
 from dataclasses import dataclass
 from itertools import takewhile
 import multiprocessing as mp
@@ -150,32 +149,36 @@ class ReductionEnvironment:
         return self._get_observation(), self._compute_reward(), self._check_termination(), self._check_truncation(), self._get_info()
 
     def _compute_reward(self) -> float:
-        reward = 0.0
+        # Initialize reward components dictionary for better tracking
+        rewards = {
+            "time_penalty": 0.0,
+            "repeat_penalty": 0.0,
+            "defect_reward": 0.0,
+            "length_reward": 0.0,
+            "proximity_reward": 0.0,
+            "improvement_bonus": 0.0
+        }
 
-        # Penalty for time taken
+        # Penalty for time taken - using a more gradual time penalty
         elapsed_time = time.time() - self.start_time
-        time_penalty = self.config.time_penalty_weight * \
-            np.log(1 + elapsed_time) / (1 + 0.1 * elapsed_time)
-        reward -= time_penalty
+        rewards["time_penalty"] = self.config.time_penalty_weight * \
+            (elapsed_time / (10.0 + elapsed_time))
 
-        # Penalty for repeated actions
+        # Penalty for repeated actions - smoothed with a cap
         if len(self.action_history) > 1:
             if self.action_history[-1] == self.action_history[-2]:
                 repeats = sum(1 for _ in takewhile(lambda x: x == self.action_history[-1],
                                                    reversed(self.action_history)))
+                # More linear penalty scaling with soft maximum
+                rewards["repeat_penalty"] = min(1.0 * repeats, 5.0)
 
-                # Exponential penalty for repeated actions
-                repeat_action_penalty = min(2.0 * (2.0 ** repeats), 100.0)
-                reward -= repeat_action_penalty
-
-        # Reward for improvement of log defect
+        # Compute current metrics
         current_log_defect = compute_log_defect(self.basis)
         self.log_defect_history.append(current_log_defect)
-
-        # Calculate current shortest vector length
         current_shortest_length = min(v.norm() for v in self.basis)
         self.shortest_length_history.append(current_shortest_length)
 
+        # Calculate improvements from previous steps
         if len(self.action_history) > 0:
             # Calculate improvement from last step for log defect
             defect_improvement = self.log_defect_history[-2] - \
@@ -187,46 +190,48 @@ class ReductionEnvironment:
 
             # Normalize length improvement relative to optimal length
             normalized_length_improvement = 0
-            if self.shortest_vector_length > 0:
-                # Compute how much closer we got to the optimal length
-                distance_to_optimal_before = self.shortest_length_history[-2] - \
-                    self.shortest_vector_length
-                distance_to_optimal_after = self.shortest_length_history[-1] - \
-                    self.shortest_vector_length
+            # Compute how much closer we got to the optimal length
+            distance_to_optimal_before = abs(
+                self.shortest_length_history[-2] - self.shortest_vector_length)
+            distance_to_optimal_after = abs(
+                self.shortest_length_history[-1] - self.shortest_vector_length)
+
+            # Use relative improvement with a safety factor
+            if distance_to_optimal_before > 0:
                 normalized_length_improvement = (
-                    distance_to_optimal_before - distance_to_optimal_after) / self.shortest_vector_length
+                    distance_to_optimal_before - distance_to_optimal_after) / (distance_to_optimal_before + 1e-6)
 
-            # Apply a bonus for improving the defect
-            if defect_improvement > 0:
-                # Larger rewards for bigger improvements with diminishing returns
-                defect_reward = 10.0 * \
-                    (1.0 - np.exp(-5.0 * defect_improvement))
-                reward += defect_reward
-            # Small penalty for making the defect worse (should be impossible with LLL)
-            elif defect_improvement < 0:
-                reward -= 1.0 * min(abs(defect_improvement), 1.0)
-
-            # Apply a bonus for reducing the shortest vector length
+            # Apply a bonus for reducing the shortest vector length - more linear
             if length_improvement > 0:
-                # Reward for making vectors shorter
-                length_reward = 15.0 * \
-                    (1.0 - np.exp(-5.0 * normalized_length_improvement))
-                reward += length_reward
+                rewards["length_reward"] = 7.0 * normalized_length_improvement
 
-            # Calculate proximity reward - how close we are to optimal
+            # Apply a bonus for improving the defect - use a more linear reward function
+            if defect_improvement > 0:
+                # More linear scaling with normalization
+                rewards["defect_reward"] = 5.0 * \
+                    min(defect_improvement / (current_log_defect + 1e-6), 1.0)
+            elif defect_improvement < 0:
+                # Small penalty for regression with diminishing effect
+                rewards["defect_reward"] = -0.5 * \
+                    min(abs(defect_improvement) /
+                        (current_log_defect + 1e-6), 0.5)
+
+            # Calculate proximity reward - smoother function
             if self.shortest_vector_length > 0:
                 proximity_ratio = current_shortest_length / self.shortest_vector_length
-                # Reward gets better as we get closer to optimal length (ratio approaches 1)
-                if proximity_ratio < 5.0:  # Only reward if we're somewhat close
-                    proximity_reward = 5.0 * \
-                        (1.0 - abs(np.log(proximity_ratio)))
-                    reward += proximity_reward
 
-            # Add a small bonus for any action that improves either metric
+                # Sigmoid-like reward that approaches maximum as we get closer to optimal
+                if proximity_ratio < 10.0:  # Increased valid range
+                    rewards["proximity_reward"] = 3.0 / \
+                        (1.0 + abs(proximity_ratio - 1.0))
+
+            # Smaller improvement bonus to avoid overshadowing the main rewards
             if defect_improvement > 0 or length_improvement > 0:
-                reward += 1.0
+                rewards["improvement_bonus"] = 0.5
 
-        return reward
+        # Clip final reward to prevent extreme values
+        total_reward = sum(rewards.values())
+        return max(min(total_reward, 10.0), -5.0)  # Clip between -5 and 10
 
     def _check_termination(self):
         """Check if episode has terminated"""
