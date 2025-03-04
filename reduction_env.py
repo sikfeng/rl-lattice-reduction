@@ -23,7 +23,7 @@ def compute_log_defect(basis: IntegerMatrix) -> float:
     return log_defect
 
 
-class BKZReduction:
+class BlockReduction:
     def __init__(self, A: IntegerMatrix):
         if not isinstance(A, IntegerMatrix):
             raise TypeError(f"Matrix must be IntegerMatrix but got {type(A)}")
@@ -50,7 +50,7 @@ class BKZReduction:
 
 
 @dataclass
-class BKZEnvConfig:
+class ReductionEnvConfig:
     # If not provided, will be set to 2 * basis_dim
     max_steps: Optional[int] = None
     min_block_size: int = None  # inclusive
@@ -74,8 +74,8 @@ class BKZEnvConfig:
                 self.actions_n += 1
 
 
-class BKZEnvironment:
-    def __init__(self, config: BKZEnvConfig):
+class ReductionEnvironment:
+    def __init__(self, config: ReductionEnvConfig):
         super().__init__()
         self.config = config
 
@@ -105,7 +105,7 @@ class BKZEnvironment:
         self.shortest_lll_basis_vector_length = options["shortest_lll_basis_vector_length"]
         self.shortest_vector_length = options["shortest_vector_length"]
 
-        self.bkz = BKZReduction(self.basis)
+        self.bkz = BlockReduction(self.basis)
         self.start_time = time.time()
         self.action_history = []
         self.log_defect_history = [compute_log_defect(self.basis)]
@@ -247,13 +247,13 @@ class BKZEnvironment:
         return False
 
 
-class BKZWorker(mp.Process):
-    def __init__(self, config: BKZEnvConfig, input_queue: mp.Queue, output_queue: mp.Queue):
+class Worker(mp.Process):
+    def __init__(self, config: ReductionEnvConfig, input_queue: mp.Queue, output_queue: mp.Queue):
         super().__init__()
         self.config = config
         self.input_queue = input_queue
         self.output_queue = output_queue
-        self.env = BKZEnvironment(config)
+        self.env = ReductionEnvironment(config)
 
     def run(self):
         while True:
@@ -274,7 +274,7 @@ class BKZWorker(mp.Process):
 
 
 class VectorizedReductionEnvironment:
-    def __init__(self, config: BKZEnvConfig):
+    def __init__(self, config: ReductionEnvConfig):
         self.config = config
         self.batch_size = config.batch_size
 
@@ -285,7 +285,7 @@ class VectorizedReductionEnvironment:
         for _ in range(self.batch_size):
             in_q = mp.Queue()
             out_q = mp.Queue()
-            worker = BKZWorker(config, in_q, out_q)
+            worker = Worker(config, in_q, out_q)
             worker.start()
             self.workers.append(worker)
             self.input_queues.append(in_q)

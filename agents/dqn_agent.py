@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchrl.data import ListStorage, ReplayBuffer
 from tqdm import tqdm
 
-from reduction_env import BKZEnvConfig, BKZEnvironment
+from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
 
 class QNetwork(nn.Module):
@@ -73,7 +73,7 @@ class QNetwork(nn.Module):
 
 
 class DQNConfig:
-    def __init__(self, env_config: BKZEnvConfig=None, lr=1e-4, gamma=0.99, batch_size=64, 
+    def __init__(self, env_config: ReductionEnvConfig=None, lr=1e-4, gamma=0.99, batch_size=64, 
                  replay_buffer_size=10000, initial_epsilon=1.0, final_epsilon=0.1, 
                  epsilon_decay_steps=10000, target_update_interval=1000, dropout_p=0.2):
         self.lr = lr
@@ -85,7 +85,7 @@ class DQNConfig:
         self.epsilon_decay_steps = epsilon_decay_steps
         self.target_update_interval = target_update_interval
         self.dropout_p = dropout_p
-        self.env_config = env_config if env_config is not None else BKZEnvConfig()
+        self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 class DQNAgent(nn.Module):
     def __init__(self, dqn_config: DQNConfig) -> None:
@@ -190,7 +190,7 @@ class DQNAgent(nn.Module):
         shortest_vector = batch['shortest_vector'] # [batch_size, n_dim]
         
         # Reset environment
-        env = BKZEnvironment(self.dqn_config.env_config)
+        env = ReductionEnvironment(self.dqn_config.env_config)
         state, _ = env.reset(options={'basis': basis.squeeze(), 'shortest_vector': shortest_vector.squeeze()})
         done = False
 
@@ -226,7 +226,7 @@ class DQNAgent(nn.Module):
 
     def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()
-        env = BKZEnvironment(self.dqn_config.env_config)
+        env = ReductionEnvironment(self.dqn_config.env_config)
         
         with torch.no_grad():
             total_reward = 0.0

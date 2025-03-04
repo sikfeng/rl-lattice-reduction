@@ -13,7 +13,7 @@ from agents.ddpg_agent import DDPGAgent, DDPGConfig
 from agents.dqn_agent import DQNAgent, DQNConfig
 from agents.ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
-from reduction_env import BKZEnvConfig
+from reduction_env import ReductionEnvConfig
 
 
 def main():
@@ -100,7 +100,7 @@ def main():
     )
 
     # Environment and agent configuration
-    env_config = BKZEnvConfig(
+    env_config = ReductionEnvConfig(
         basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size, batch_size=args.batch_size)
 
     if args.model == "ddpg":

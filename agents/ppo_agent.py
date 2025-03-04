@@ -9,7 +9,7 @@ from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 from tqdm import tqdm
 
-from reduction_env import BKZEnvConfig, VectorizedReductionEnvironment
+from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
 class LatticeTransformer(nn.Module):
@@ -281,7 +281,7 @@ class ActorCritic(nn.Module):
 
 
 class PPOConfig:
-    def __init__(self, env_config: BKZEnvConfig = None, lr=3e-4, gamma=0.99, gae_lambda=0.95,
+    def __init__(self, env_config: ReductionEnvConfig = None, lr=3e-4, gamma=0.99, gae_lambda=0.95,
                  clip_epsilon=0.2, epochs=4, batch_size=64, dropout_p=0.2):
         self.lr = lr
         self.gamma = gamma
@@ -290,7 +290,7 @@ class PPOConfig:
         self.epochs = epochs
         self.batch_size = batch_size
         self.dropout_p = dropout_p
-        self.env_config = env_config if env_config is not None else BKZEnvConfig()
+        self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 
 class PPOAgent(nn.Module):

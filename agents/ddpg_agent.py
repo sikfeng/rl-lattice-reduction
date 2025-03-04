@@ -10,7 +10,7 @@ from torchrl.data import ListStorage, ReplayBuffer
 from tqdm import tqdm
 import copy
 
-from reduction_env import BKZEnvConfig, BKZEnvironment
+from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
 
 class ActorNetwork(nn.Module):
@@ -167,7 +167,7 @@ class OUNoise:
 
 
 class DDPGConfig:
-    def __init__(self, env_config: BKZEnvConfig=None, actor_lr=1e-4, critic_lr=1e-3, 
+    def __init__(self, env_config: ReductionEnvConfig=None, actor_lr=1e-4, critic_lr=1e-3, 
                  gamma=0.99, tau=0.005, batch_size=64, buffer_size=100000, 
                  dropout_p=0.2, noise_sigma=0.2):
         self.actor_lr = actor_lr
@@ -178,7 +178,7 @@ class DDPGConfig:
         self.buffer_size = buffer_size
         self.dropout_p = dropout_p
         self.noise_sigma = noise_sigma
-        self.env_config = env_config if env_config is not None else BKZEnvConfig()
+        self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 
 class DDPGAgent(nn.Module):
@@ -338,7 +338,7 @@ class DDPGAgent(nn.Module):
         shortest_vector = batch['shortest_vector']  # [batch_size, n_dim]
         
         # Reset environment
-        env = BKZEnvironment(self.ddpg_config.env_config)
+        env = ReductionEnvironment(self.ddpg_config.env_config)
         state, _ = env.reset(options={'basis': basis.squeeze(), 'shortest_vector': shortest_vector.squeeze()})
         self.noise.reset()  # Reset exploration noise
         
@@ -387,7 +387,7 @@ class DDPGAgent(nn.Module):
 
     def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()
-        env = BKZEnvironment(self.ddpg_config.env_config)
+        env = ReductionEnvironment(self.ddpg_config.env_config)
         
         with torch.no_grad():
             total_reward = 0.0
