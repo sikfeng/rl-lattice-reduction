@@ -30,9 +30,10 @@ class BlockReduction:
             raise TypeError(f"Matrix must be IntegerMatrix but got {type(A)}")
 
         self.A = A
+        LLL.reduction(self.A)
 
     def __call__(self, kappa, block_size):
-        """Perform LLL reduction on a block.
+        """Perform one step of Lattice reduction.
 
         :param kappa: row index
         :param block_size: an integer >= 2
@@ -43,10 +44,15 @@ class BlockReduction:
 
         LLL.reduction(block_matrix)
 
-        for i in range(block_size):
-            for j in range(self.A.ncols):
-                self.A[kappa + i, j] = block_matrix[i, j]
+        shortest_idx = np.argmin([row.norm() for row in block_matrix])
+        row = block_matrix[shortest_idx]
+        self.A.set_rows(self.A.nrows + 1)
 
+        for i in range(self.A.ncols):
+            self.A[-1, i] = row[i]
+        LLL.reduction(self.A)
+
+        self.A = self.A.submatrix(range(1, self.A.nrows), range(self.A.ncols))
         return self.A
 
 
@@ -98,7 +104,10 @@ class ReductionEnvironment:
         }
 
     def _get_info(self) -> Dict[str, Any]:
-        return {"log_defect": compute_log_defect(self.basis)}
+        return {
+            "log_defect": self.log_defect_history[-1],
+            "shortest_length": self.shortest_length_history[-1]
+        }
 
     def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
@@ -130,7 +139,7 @@ class ReductionEnvironment:
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         start_pos, block_size = self._action_to_block(action)
-        self.bkz(start_pos, block_size)
+        self.basis = self.bkz(start_pos, block_size)
 
         self.action_history.append(action)
 
