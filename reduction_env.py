@@ -1,3 +1,4 @@
+import cloudpickle
 from dataclasses import dataclass
 from itertools import takewhile
 import multiprocessing as mp
@@ -119,14 +120,13 @@ class ReductionEnvironment:
         """Convert single action index to block size and start position"""
         assert action < self.config.actions_n, f"Action {action} provided, but only {self.config.actions_n} actions available!"
 
-        action_ = action.clone()
         for start_pos in range(self.config.basis_dim):
             for block_size in range(self.config.min_block_size, self.config.max_block_size + 1):
                 if start_pos + block_size > self.config.basis_dim:
                     continue
-                if action_ == 0:
+                if action == 0:
                     return start_pos, block_size
-                action_ -= 1
+                action -= 1
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         start_pos, block_size = self._action_to_block(action)
@@ -247,30 +247,27 @@ class ReductionEnvironment:
         return False
 
 
-class Worker(mp.Process):
-    def __init__(self, config: ReductionEnvConfig, input_queue: mp.Queue, output_queue: mp.Queue):
-        super().__init__()
-        self.config = config
-        self.input_queue = input_queue
-        self.output_queue = output_queue
-        self.env = ReductionEnvironment(config)
-
-    def run(self):
+def _worker(work_remote, remote, config):
+    """Worker function to run environment in subprocess."""
+    remote.close()
+    env = ReductionEnvironment(config)
+    try:
         while True:
-            cmd, data = self.input_queue.get()
+            cmd, data = work_remote.recv()
             if cmd == 'reset':
-                obs, info = self.env.reset(data)
-                self.output_queue.put((obs, info))
+                obs, info = env.reset(data)
+                work_remote.send((obs, info))
             elif cmd == 'step':
-                action_idx = data
-                obs, reward, terminated, truncated, info = self.env.step(
-                    torch.tensor(action_idx))
-                self.output_queue.put(
-                    (obs, reward, terminated, truncated, info))
+                obs, reward, terminated, truncated, info = env.step(data)
+                work_remote.send((obs, reward, terminated, truncated, info))
             elif cmd == 'close':
+                env.close()
+                work_remote.close()
                 break
-        self.input_queue.close()
-        self.output_queue.close()
+            else:
+                raise NotImplementedError(f"Command {cmd} not recognized")
+    except (EOFError, KeyboardInterrupt):
+        env.close()
 
 
 class VectorizedReductionEnvironment:
@@ -278,26 +275,24 @@ class VectorizedReductionEnvironment:
         self.config = config
         self.batch_size = config.batch_size
 
-        self.workers = []
-        self.input_queues = []
-        self.output_queues = []
+        start_method = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+        ctx = mp.get_context(start_method)
 
-        for _ in range(self.batch_size):
-            in_q = mp.Queue()
-            out_q = mp.Queue()
-            worker = Worker(config, in_q, out_q)
-            worker.start()
-            self.workers.append(worker)
-            self.input_queues.append(in_q)
-            self.output_queues.append(out_q)
+        self.remotes, self.work_remotes = zip(
+            *[ctx.Pipe() for _ in range(self.batch_size)])
+        self.processes = []
+        for work_remote, remote in zip(self.work_remotes, self.remotes):
+            args = (work_remote, remote, config)
+            process = ctx.Process(target=_worker, args=args, daemon=True)
+            process.start()
+            self.processes.append(process)
+            work_remote.close()
 
     def reset(self, options: TensorDict) -> List[Tuple[Dict[str, torch.Tensor], Dict[str, Any]]]:
         options_list = options.unbind(dim=0)
-
-        for i in range(self.batch_size):
-            self.input_queues[i].put(('reset', options_list[i]))
-
-        results = [self.output_queues[i].get() for i in range(self.batch_size)]
+        for remote, action in zip(self.remotes, options_list):
+            remote.send(('reset', action))
+        results = [remote.recv() for remote in self.remotes]
         states, infos = zip(*results)
 
         states_ = {key: torch.stack([state[key]
@@ -312,17 +307,17 @@ class VectorizedReductionEnvironment:
         return TensorDict(states_), TensorDict(infos_)
 
     def step(self, actions: torch.Tensor):
-        for i in range(self.batch_size):
-            self.input_queues[i].put(('step', actions[i].item()))
-
-        results = [self.output_queues[i].get() for i in range(self.batch_size)]
+        actions_list = actions.cpu().tolist()
+        for remote, action in zip(self.remotes, actions_list):
+            remote.send(('step', action))
+        results = [remote.recv() for remote in self.remotes]
         next_states, rewards, terminateds, truncateds, infos = zip(*results)
 
         next_states_ = TensorDict({key: torch.stack(
             [state[key] for state in next_states]) for key in next_states[0]})
-        rewards_ = torch.tensor(rewards)
-        terminateds_ = torch.tensor(terminateds)
-        truncateds_ = torch.tensor(truncateds)
+        rewards_ = torch.tensor(rewards, dtype=torch.float32)
+        terminateds_ = torch.tensor(terminateds, dtype=torch.bool)
+        truncateds_ = torch.tensor(truncateds, dtype=torch.bool)
         infos_ = {}
         for key in infos[0]:
             if isinstance(infos[0][key], torch.Tensor):
@@ -330,22 +325,19 @@ class VectorizedReductionEnvironment:
             else:
                 infos_[key] = torch.Tensor([info[key] for info in infos])
 
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        terminateds = torch.tensor(terminateds, dtype=torch.bool)
-        truncateds = torch.tensor(truncateds, dtype=torch.bool)
         return next_states_, rewards_, terminateds_, truncateds_, infos_
 
     def close(self):
-        for i in range(self.batch_size):
-            self.input_queues[i].put(('close', None))
-
-        for worker in self.workers:
-            worker.join()
-
-        for q in self.input_queues:
-            q.close()
-            q.join_thread()
-
-        for q in self.output_queues:
-            q.close()
-            q.join_thread()
+        """Clean up resources."""
+        if self.closed:
+            return
+        self.closed = True
+        for remote in self.remotes:
+            try:
+                remote.send(('close', None))
+            except BrokenPipeError:
+                pass
+        for process in self.processes:
+            process.join()
+        for remote in self.remotes:
+            remote.close()
