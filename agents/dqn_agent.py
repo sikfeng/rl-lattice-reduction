@@ -73,8 +73,8 @@ class QNetwork(nn.Module):
 
 
 class DQNConfig:
-    def __init__(self, env_config: ReductionEnvConfig=None, lr=1e-4, gamma=0.99, batch_size=64, 
-                 replay_buffer_size=10000, initial_epsilon=1.0, final_epsilon=0.1, 
+    def __init__(self, env_config: ReductionEnvConfig = None, lr=1e-4, gamma=0.99, batch_size=64,
+                 replay_buffer_size=10000, initial_epsilon=1.0, final_epsilon=0.1,
                  epsilon_decay_steps=10000, target_update_interval=1000, dropout_p=0.2):
         self.lr = lr
         self.gamma = gamma
@@ -86,6 +86,7 @@ class DQNConfig:
         self.target_update_interval = target_update_interval
         self.dropout_p = dropout_p
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
+
 
 class DQNAgent(nn.Module):
     def __init__(self, dqn_config: DQNConfig) -> None:
@@ -108,11 +109,14 @@ class DQNAgent(nn.Module):
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
         self.mse_loss = nn.MSELoss()
-        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=dqn_config.lr)
-        
-        self.replay_buffer = ReplayBuffer(storage=ListStorage(max_size=self.dqn_config.replay_buffer_size))
+        self.optimizer = optim.AdamW(
+            self.policy_net.parameters(), lr=dqn_config.lr)
+
+        self.replay_buffer = ReplayBuffer(storage=ListStorage(
+            max_size=self.dqn_config.replay_buffer_size))
         self.epsilon = dqn_config.initial_epsilon
-        self.epsilon_decay = (dqn_config.initial_epsilon - dqn_config.final_epsilon) / dqn_config.epsilon_decay_steps
+        self.epsilon_decay = (dqn_config.initial_epsilon -
+                              dqn_config.final_epsilon) / dqn_config.epsilon_decay_steps
         self.steps = 0  # Tracks number of updates for target network and epsilon decay
 
     def store_transition(self, state, action, reward, done, next_state):
@@ -146,8 +150,9 @@ class DQNAgent(nn.Module):
     def update(self, device: Union[torch.device, str]) -> None:
         if len(self.replay_buffer) < self.dqn_config.batch_size:
             return None
-        
-        batch = self.replay_buffer.sample(self.dqn_config.batch_size).to(device)
+
+        batch = self.replay_buffer.sample(
+            self.dqn_config.batch_size).to(device)
         states = batch["state"].flatten(0, 1)
         actions = batch["action"].flatten(0, 1)
         rewards = batch["reward"].flatten(0, 1)
@@ -155,12 +160,14 @@ class DQNAgent(nn.Module):
         next_states = batch["next_state"].flatten(0, 1)
 
         # Compute current Q values
-        current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        current_q_values = self.policy_net(states).gather(
+            1, actions.unsqueeze(1)).squeeze(1)
 
         # Compute target Q values
         with torch.no_grad():
             next_q_values = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + self.dqn_config.gamma * next_q_values * (~dones)
+            target_q_values = rewards + \
+                self.dqn_config.gamma * next_q_values * (~dones)
 
         # Calculate loss
         loss = self.mse_loss(current_q_values, target_q_values)
@@ -172,8 +179,8 @@ class DQNAgent(nn.Module):
         self.optimizer.step()
 
         # Decay epsilon
-        self.epsilon = max(self.dqn_config.final_epsilon, 
-                          self.epsilon - self.epsilon_decay)
+        self.epsilon = max(self.dqn_config.final_epsilon,
+                           self.epsilon - self.epsilon_decay)
         self.steps += 1
 
         # Update target network
@@ -186,31 +193,32 @@ class DQNAgent(nn.Module):
         self.train()
 
         # Unpack batch data
-        basis = batch['basis'] # [batch_size, n_dim, n_dim]
-        shortest_vector = batch['shortest_vector'] # [batch_size, n_dim]
-        
+        basis = batch['basis']  # [batch_size, n_dim, n_dim]
+        shortest_vector = batch['shortest_vector']  # [batch_size, n_dim]
+
         # Reset environment
         env = ReductionEnvironment(self.dqn_config.env_config)
-        state, _ = env.reset(options={'basis': basis.squeeze(), 'shortest_vector': shortest_vector.squeeze()})
+        state, _ = env.reset(options={'basis': basis.squeeze(
+        ), 'shortest_vector': shortest_vector.squeeze()})
         done = False
 
         state = TensorDict({
             "basis": state["basis"].unsqueeze(0).to(device),
             "action_history": state["action_history"].unsqueeze(0).to(device)
         }, batch_size=[])
-        
+
         # Run episode
-        while not done: # should use step count as max
+        while not done:  # should use step count as max
 
             action = self.get_action(state)
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
-            
+
             next_state = TensorDict({
                 "basis": next_state["basis"].unsqueeze(0).to(device),
                 "action_history": next_state["action_history"].unsqueeze(0).to(device)
             }, batch_size=[])
-            
+
             self.store_transition(
                 state,
                 action,
@@ -219,7 +227,7 @@ class DQNAgent(nn.Module):
                 next_state
             )
             state = next_state
-        
+
         # Update agent
         avg_reward = self.update(device)
         return avg_reward
@@ -227,32 +235,34 @@ class DQNAgent(nn.Module):
     def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()
         env = ReductionEnvironment(self.dqn_config.env_config)
-        
+
         with torch.no_grad():
             total_reward = 0.0
             total_steps = 0
             success_count = 0
             num_samples = len(dataloader)
-            
+
             for batch in tqdm(dataloader, dynamic_ncols=True):
                 # Unpack batch data
                 basis = batch['basis'].squeeze()
                 shortest_vector = batch['shortest_vector'].squeeze()
-                
-                state, info = env.reset(options={'basis': basis, 'shortest_vector': shortest_vector})
+
+                state, info = env.reset(
+                    options={'basis': basis, 'shortest_vector': shortest_vector})
                 log_defect_history = [info["log_defect"]]
                 done = False
                 episode_reward = 0
                 steps = 0
-                
+
                 state = TensorDict({
                     "basis": state["basis"].unsqueeze(0).to(device),
                     "action_history": state["action_history"].unsqueeze(0).to(device)
                 }, batch_size=[])
-                
+
                 while not done:
                     action = self.get_action(state)
-                    next_state, reward, terminated, truncated, info = env.step(action)
+                    next_state, reward, terminated, truncated, info = env.step(
+                        action)
                     next_state = TensorDict({
                         "basis": next_state["basis"].unsqueeze(0).to(device),
                         "action_history": next_state["action_history"].unsqueeze(0).to(device)
@@ -263,15 +273,15 @@ class DQNAgent(nn.Module):
                     episode_reward += reward
                     steps += 1
                     state = next_state
-                
+
                 total_reward += episode_reward
                 total_steps += steps
-                
+
                 # Check success
                 final_log_defect = log_defect_history[-1]
                 if final_log_defect - batch["lll_log_defect"] < 1e-3:
                     success_count += 1
-            
+
             return {
                 'avg_reward': total_reward / num_samples,
                 'avg_steps': total_steps / num_samples,
