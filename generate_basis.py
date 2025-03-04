@@ -3,7 +3,7 @@ from functools import partial
 import multiprocessing as mp
 from pathlib import Path
 
-from fpylll import IntegerMatrix, SVP, LLL
+from fpylll import IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
 
@@ -86,46 +86,51 @@ def generate_uniform(n, low=-50, high=50):
 
 
 def func(_, n, distribution):
-    if distribution == 'uniform':
-        basis = generate_uniform(n)
-    else:
-        raise ValueError("Invalid distribution type")
+    while True:
+        try:
+            if distribution == 'uniform':
+                basis = generate_uniform(n)
+            else:
+                raise ValueError("Invalid distribution type")
 
-    # Calculate the length of the shortest basis vector in the original basis
-    original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
-    shortest_original_basis_vector_length = np.min(
-        original_basis_vector_lengths)
+            # Calculate the length of the shortest basis vector in the original basis
+            original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
+            shortest_original_basis_vector_length = np.min(
+                original_basis_vector_lengths)
 
-    # Calculate log defect of the original basis
-    original_log_defect = log_defect(basis)
+            # Calculate log defect of the original basis
+            original_log_defect = log_defect(basis)
 
-    # Calculate shortest vector and its length
-    shortest_vector = svp(basis)
-    shortest_vector_length = np.linalg.norm(shortest_vector)
+            # Calculate shortest vector and its length
+            shortest_vector = svp(basis)
+            shortest_vector_length = np.linalg.norm(shortest_vector)
 
-    # Calculate LLL reduced basis
-    lll_reduced_basis = lll_reduction(basis)
+            # Calculate LLL reduced basis
+            lll_reduced_basis = lll_reduction(basis)
 
-    # Calculate log defect of the LLL reduced basis
-    defect = log_defect(lll_reduced_basis)
+            # Calculate log defect of the LLL reduced basis
+            defect = log_defect(lll_reduced_basis)
 
-    # Calculate length of the shortest basis vector in the LLL reduced basis
-    lll_basis_vector_lengths = np.linalg.norm(lll_reduced_basis, axis=1)
-    shortest_lll_basis_vector_length = np.min(lll_basis_vector_lengths)
+            # Calculate length of the shortest basis vector in the LLL reduced basis
+            lll_basis_vector_lengths = np.linalg.norm(
+                lll_reduced_basis, axis=1)
+            shortest_lll_basis_vector_length = np.min(lll_basis_vector_lengths)
 
-    # Calculate Gaussian heuristic
-    shortest_vector_length_gh = gaussian_heuristic(basis)
+            # Calculate Gaussian heuristic
+            shortest_vector_length_gh = gaussian_heuristic(basis)
 
-    # Store all the data
-    return {
-        "basis": basis,
-        "shortest_original_basis_vector_length": shortest_original_basis_vector_length,
-        "original_log_defect": original_log_defect,
-        "lll_log_defect": defect,
-        "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
-        "shortest_vector_length": shortest_vector_length,
-        "shortest_vector_length_gh": shortest_vector_length_gh,
-    }
+            # Store all the data
+            return {
+                "basis": basis,
+                "shortest_original_basis_vector_length": shortest_original_basis_vector_length,
+                "original_log_defect": original_log_defect,
+                "lll_log_defect": defect,
+                "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
+                "shortest_vector_length": shortest_vector_length,
+                "shortest_vector_length_gh": shortest_vector_length_gh,
+            }
+        except ReductionError:
+            continue
 
 
 def main():
