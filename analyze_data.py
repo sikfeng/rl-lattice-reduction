@@ -65,7 +65,7 @@ def plot_log_defects(df, save_path=None):
     df['dimension'] = df['dimension'].astype(str)
     df['distribution_type'] = df['distribution_type'].astype(str)
 
-    fig, ax = plt.figure(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(8, 6))
 
     # Use both hue and style to differentiate groups.
     sns.scatterplot(
