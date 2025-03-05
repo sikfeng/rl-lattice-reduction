@@ -37,15 +37,11 @@ def generate_statistics(data_dir, dimensions, distributions):
 def get_statistics(data_dir, dimensions, distributions, stats_filename="statistics.csv"):
     stats_file = Path(stats_filename)
 
-    if stats_file.exists():
-        print(f"Loading statistics from {stats_file}")
-        df = pd.read_csv(stats_file)
-    else:
-        print("Generating statistics...")
-        statistics = generate_statistics(data_dir, dimensions, distributions)
-        df = pd.DataFrame(statistics)
-        df.to_csv(stats_file, index=False)
-        print(f"Statistics saved to {stats_file}")
+    print("Generating statistics...")
+    statistics = generate_statistics(data_dir, dimensions, distributions)
+    df = pd.DataFrame(statistics)
+    df.to_csv(stats_file, index=False)
+    print(f"Statistics saved to {stats_file}")
 
     return df
 
@@ -78,15 +74,15 @@ def plot_log_defects(df, save_path=None):
         s=100
     )
 
-    x_diagonal = np.linspace(0, 50, 100)  # Adjust range as needed
-    y_diagonal = x_diagonal
-    plt.plot(x_diagonal, y_diagonal, 'r--', alpha=0.5, label="No Improvement")
-
     max_val = max(np.max(df["original_log_defect"]),
                   np.max(df["lll_log_defect"]))
     # Add some padding to the maximum value
-    max_val = min(max_val * 1.1, 50)  # Limit to 50 to avoid extreme scales
+    max_val = max_val * 1.1  # Limit to 50 to avoid extreme scales
     min_val = 0  # Defects are typically positive
+
+    x_diagonal = np.linspace(0, max_val, 100)  # Adjust range as needed
+    y_diagonal = x_diagonal
+    plt.plot(x_diagonal, y_diagonal, 'r--', alpha=0.5, label="No Improvement")
 
     ax.set_xlim(min_val, max_val)
     ax.set_ylim(min_val, max_val)
@@ -170,22 +166,23 @@ def plot_vector_lengths(df, save_path=None):
     ax.legend(unique.values(), unique.keys(),
               title="Group (Dim_Dist & Measurement)", loc="best")
 
-    # Plot a diagonal (equality) line for reference.
-    x_diagonal = np.linspace(0, 100, 100)  # Adjust the range if necessary.
-    ax.plot(x_diagonal, x_diagonal, 'r--', alpha=0.5, label="Equality Line")
-
     # Determine axis limits based on the maximum values across both measurements.
     max_val = max(np.max(df["shortest_vector_length"]),
                   np.max(df["shortest_vector_length_gh"]),
                   np.max(df["shortest_lll_basis_vector_length"]))
-    max_val = min(max_val * 1.1, 100)  # Add padding and cap at 100.
+    max_val = max_val * 1.1
+
+    # Plot a diagonal (equality) line for reference.
+    x_diagonal = np.linspace(0, max_val, 100)  # Adjust the range if necessary.
+    ax.plot(x_diagonal, x_diagonal, 'r--', alpha=0.5, label="Equality Line")
+
     ax.set_xlim(0, max_val)
     ax.set_ylim(0, max_val)
     ax.grid(True, linestyle='--', alpha=0.3)
 
     ax.set_title("Shortest Vector Length vs. Gaussian Heuristic (GH) or LLL")
     ax.set_xlabel("Shortest Vector Length")
-    ax.set_ylabel("GH or LLL")
+    ax.set_ylabel("GH/LLL")
 
     if save_path:
         plt.savefig(save_path)
@@ -195,7 +192,7 @@ def plot_vector_lengths(df, save_path=None):
 
 def main():
     data_dir = Path("random_bases")
-    dimensions = [4, 6, 8, 12, 16]
+    dimensions = [4, 16, 20, 32, 48, 64, 70]
     distributions = ["uniform"]
 
     df = get_statistics(data_dir, dimensions, distributions)
