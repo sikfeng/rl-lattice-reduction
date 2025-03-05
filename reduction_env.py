@@ -49,6 +49,10 @@ class BlockReduction:
 
         for i in range(self.A.ncols):
             self.A[-1, i] = row[i]
+
+        for i in range(self.A.nrows - 1, kappa, -1):
+            self.A.swap_rows(i, i - 1)
+
         LLL.reduction(self.A)
 
         self.A = self.A.submatrix(range(1, self.A.nrows), range(self.A.ncols))
