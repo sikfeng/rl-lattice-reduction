@@ -485,7 +485,7 @@ class PPOAgent(nn.Module):
                     shortest_length_history.append(infos["shortest_length"])
                     dones = torch.logical_or(terminateds, truncateds)
                     episode_reward += rewards
-                    steps += 1
+                    steps += self.ppo_config.env_config.basis_dim
                     states = next_states
 
                 total_reward += episode_reward.sum().item()
