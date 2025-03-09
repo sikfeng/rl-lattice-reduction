@@ -9,14 +9,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from agents.ddpg_agent import DDPGAgent, DDPGConfig
-from agents.dqn_agent import DQNAgent, DQNConfig
 from agents.ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
 
 
 def main():
+    distributions = ["uniform", "ajtai", "qary", "ntrulike"]
+
     FPLLL.set_precision(1000)
 
     parser = argparse.ArgumentParser()
@@ -25,16 +25,16 @@ def main():
     parser.add_argument("--eval-interval", type=int, default=1000)
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str,
-                        default="uniform", choices=["uniform"])
+                        choices=distributions)
     parser.add_argument("--min-block-size", type=int, default=2)
     parser.add_argument("--max-block-size", type=int)
-    parser.add_argument("--model", type=str, choices=["ddpg", "dqn", "ppo"])
+    parser.add_argument("--model", type=str, choices=["ppo"])
     parser.add_argument("--batch-size", type=int, default=1)
     args = parser.parse_args()
 
     # Set default for max_block_size
     if args.max_block_size is None:
-        args.max_block_size = args.dim
+        args.max_block_size = min(args.dim, 45)
 
     # Validation
     if args.min_block_size < 2:
@@ -54,15 +54,11 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    if args.model == "ddpg":
-        checkpoint_dir = Path(
-            f"checkpoint/ddpg-model_dim-{args.dim}_{start_timestamp}")
-    elif args.model == "dqn":
-        checkpoint_dir = Path(
-            f"checkpoint/dqn-model_dim-{args.dim}_{start_timestamp}")
-    elif args.model == "ppo":
+    if args.model == "ppo":
         checkpoint_dir = Path(
             f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
+    else:
+        raise ValueError("Invalid model type provided.")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -103,13 +99,7 @@ def main():
     env_config = ReductionEnvConfig(
         basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size, batch_size=args.batch_size)
 
-    if args.model == "ddpg":
-        ddpg_config = DDPGConfig(env_config=env_config)
-        agent = DDPGAgent(ddpg_config=ddpg_config).to(device)
-    elif args.model == "dqn":
-        dqn_config = DQNConfig(env_config=env_config)
-        agent = DQNAgent(dqn_config=dqn_config).to(device)
-    elif args.model == "ppo":
+    if args.model == "ppo":
         ppo_config = PPOConfig(env_config=env_config)
         agent = PPOAgent(ppo_config=ppo_config).to(device)
 
@@ -155,11 +145,7 @@ def main():
 
     logging.info(f"Best Val Success: {best_success:.2f}")
 
-    if args.model == "ddpg":
-        best_agent = DDPGAgent(ddpg_config=ddpg_config).to(device)
-    elif args.model == "dqn":
-        best_agent = DQNAgent(dqn_config=dqn_config).to(device)
-    elif args.model == "ppo":
+    if args.model == "ppo":
         best_agent = PPOAgent(ppo_config=ppo_config).to(device)
 
     best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
