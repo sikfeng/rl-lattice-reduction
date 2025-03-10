@@ -192,8 +192,8 @@ def plot_vector_lengths(df, save_path=None):
 
 def main():
     data_dir = Path("random_bases")
-    dimensions = [4, 16, 20, 32, 48, 64, 70]
-    distributions = ["uniform"]
+    dimensions = [16, 24, 32]
+    distributions = ["uniform", "qary", "ntrulike"]
 
     df = get_statistics(data_dir, dimensions, distributions)
 
