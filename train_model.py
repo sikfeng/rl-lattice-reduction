@@ -15,7 +15,7 @@ from reduction_env import ReductionEnvConfig
 
 
 def main():
-    distributions = ["uniform", "ajtai", "qary", "ntrulike"]
+    distributions = ["uniform", "qary", "ntrulike"]
 
     FPLLL.set_precision(1000)
 
