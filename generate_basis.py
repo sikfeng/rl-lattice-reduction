@@ -5,7 +5,6 @@ from pathlib import Path
 
 from fpylll import IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
-from sympy import Matrix
 from tqdm import tqdm
 
 
@@ -20,7 +19,7 @@ def svp(basis):
         numpy.ndarray: The shortest vector in the lattice, represented as a 1-dimensional numpy array.
     """
     basis_fpylll = IntegerMatrix.from_matrix(basis)
-    return np.array(SVP.shortest_vector(basis_fpylll))
+    return np.array(SVP.shortest_vector(basis_fpylll, method='proved'))
 
 
 def lll_reduction(basis):
@@ -86,51 +85,11 @@ def generate_uniform(n, low=-50, high=50):
     return np.random.randint(low=low, high=high, size=(n, n), dtype=int)
 
 
-def generate_ajtai(n, q):
-    def compute_kernel_basis(A, q):
-        """
-        Compute a basis for the q-ary lattice Λ⊥_q(A) = {x ∈ Z^m : Ax ≡ 0 (mod q)}.
-
-        Parameters:
-        - A: Matrix A in Z_q^{n×m}
-        - q: Modulus
-
-        Returns:
-        - B: A basis for the lattice Λ⊥_q(A)
-        """
-        n, m = A.shape
-
-        # Create the extended matrix [A | qI]
-        A_ext = np.zeros((n, m + n), dtype=int)
-        A_ext[:, :m] = A
-        for i in range(n):
-            A_ext[i, m + i] = q
-
-        # Convert to SymPy matrix for exact arithmetic
-        A_ext_sp = Matrix(A_ext)
-
-        # Find the nullspace (kernel)
-        null_space = A_ext_sp.nullspace()
-
-        # Extract basis as integer vectors
-        basis = []
-        for vec in null_space:
-            # Convert to Python list of integers
-            int_vec = [int(x) for x in vec]
-            # Take only the first m entries (discard the auxiliary variables)
-            basis.append(int_vec[:m])
-
-        return np.array(basis)
-    basis = generate_uniform(n, low=0, high=q)
-    B = compute_kernel_basis(basis, q)
-    return B
-
-
-def generate_qary(n, q, b=1):
+def generate_qary(n, q, k):
     assert n % 2 == 0
 
-    basis = IntegerMatrix.random(n // 2, "qary", q=q, b=b)
-    np_basis = np.zeros((2*n, 2*n), dtype=int)
+    basis = IntegerMatrix.random(n, "qary", q=q, k=k)
+    np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
     return np_basis
 
@@ -139,23 +98,21 @@ def generate_ntrulike(n, q):
     assert n % 2 == 0
 
     basis = IntegerMatrix.random(n // 2, "ntrulike", q=q)
-    np_basis = np.zeros((2*n, 2*n), dtype=int)
+    np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
     return np_basis
 
 
 def func(_, n, distribution):
-    distributions = ["uniform", "ajtai", "qary", "ntrulike"]
+    distributions = ["uniform", "qary", "ntrulike"]
     assert distribution in distributions, "Invalid distribution type."
 
     while True:
         try:
             if distribution == "uniform":
                 basis = generate_uniform(n)
-            elif distribution == "ajtai":
-                basis = generate_ajtai(n, q=127)
             elif distribution == "qary":
-                basis = generate_qary(n, q=127)
+                basis = generate_qary(n, q=47, k=1)
             elif distribution == "ntrulike":
                 basis = generate_ntrulike(n, q=127)
 
@@ -182,7 +139,7 @@ def func(_, n, distribution):
             shortest_vector_length_gh = gaussian_heuristic(basis)
 
             # Calculate shortest vector and its length
-            shortest_vector = svp(lll_reduced_basis)
+            shortest_vector = svp(basis)
             shortest_vector_length = np.linalg.norm(shortest_vector)
 
             # Store all the data
@@ -200,10 +157,10 @@ def func(_, n, distribution):
 
 
 def main():
+    distributions = ["uniform", "qary", "ntrulike"]
     parser = argparse.ArgumentParser(description="Generate random basis")
     parser.add_argument("-d", "--dim", type=int, default=4)
-    parser.add_argument("--distribution", type=str,
-                        choices=["uniform", "ajtai", "qary", "ntrulike"])
+    parser.add_argument("--distribution", type=str, choices=distributions)
     parser.add_argument("--train_samples", type=int, default=10_000)
     parser.add_argument("--val_samples", type=int, default=4_000)
     parser.add_argument("--test_samples", type=int, default=4_000)

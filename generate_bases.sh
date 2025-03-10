@@ -2,7 +2,7 @@
 
 # List of dimensions to generate bases for
 dims=(16 24 32)
-dists=(uniform ajtai qary ntrulike)
+dists=(uniform qary ntrulike)
 
 for dim in "${dims[@]}"; do
     for dist in "${dists[@]}"; do
