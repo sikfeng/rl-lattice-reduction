@@ -194,7 +194,7 @@ class ActorCritic(nn.Module):
 
         # Process global features
         global_features = torch.cat([
-            tensordict["orthogonality_defect"],
+            tensordict["log_orthogonality_defect"],
             tensordict["pairwise_angles"],
             torch.cat([basis_norms.squeeze(2), gs_norms.squeeze(2)], dim=1)
         ], dim=1)
@@ -248,9 +248,10 @@ class ActorCritic(nn.Module):
         gs_norms = torch.norm(gs_basis, dim=2)
 
         # Calculate orthogonality defect
-        prod_norms = torch.prod(basis_norms, dim=1, keepdim=True)
-        det_basis = torch.abs(torch.linalg.det(basis))
-        orthogonality_defect = prod_norms / (det_basis.unsqueeze(1) + 1e-10)
+        log_basis_norms = torch.log(basis_norms)
+        log_prod_norms = torch.sum(log_basis_norms, dim=1, keepdim=True)
+        log_det_basis = torch.log(torch.abs(torch.linalg.det(basis)) + 1e-10)
+        log_orthogonality_defect = log_prod_norms - log_det_basis.unsqueeze(1)
 
         # Calculate pairwise angles
         normalized_basis = basis / (basis_norms.unsqueeze(2) + 1e-10)
@@ -273,7 +274,7 @@ class ActorCritic(nn.Module):
             "basis": basis,
             "gs_basis": gs_basis,
             "basis_norms": torch.cat([basis_norms, gs_norms], dim=1),
-            "orthogonality_defect": orthogonality_defect,
+            "log_orthogonality_defect": log_orthogonality_defect,
             "pairwise_angles": pairwise_angles,
             "mu_coefficients": mu,
             "action_history": tensordict["action_history"]
