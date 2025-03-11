@@ -60,11 +60,12 @@ class ActorCritic(nn.Module):
 
         # Transformer for processing basis vectors
         self.basis_encoder = nn.Sequential(
+            Transpose(-2, -1),
             nn.Linear(self.basis_dim, self.basis_features_hidden_dim),
             PositionalEncoding(self.basis_features_hidden_dim,
                                max_len=self.basis_dim),
             Transpose(-2, -1),
-            nn.Linear(self.basis_dim, self.basis_features_hidden_dim),
+            nn.Linear(self.basis_dim, self.basis_features_hidden_dim), # TODO: the following network looses the invariance over the last axis that we were trying to keep
             nn.Flatten(-2, -1),
             nn.Linear(self.basis_features_hidden_dim **
                       2, self.basis_features_hidden_dim)
