@@ -1,3 +1,4 @@
+import math
 from typing import Dict, Tuple, Union
 
 from tensordict import TensorDict
@@ -12,112 +13,96 @@ from tqdm import tqdm
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
-class LatticeTransformer(nn.Module):
-    def __init__(
-        self, basis_dim: int, feature_dim: int, nhead: int = 4,
-        num_layers: int = 3, dim_feedforward: int = 512, dropout_p: float = 0.1
-    ) -> None:
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
 
-        # Initial embedding for each basis vector and its features
-        self.basis_dim = basis_dim
-        self.feature_dim = feature_dim
-
-        # Transform each basis vector into a higher-dim representation
-        self.vector_embedding = nn.Linear(feature_dim, dim_feedforward)
-
-        # Positional encoding to maintain vector order information
-        self.pos_encoder = nn.Parameter(
-            torch.zeros(1, basis_dim, dim_feedforward))
-
-        # Transformer encoder layers
-        encoder_layers = nn.TransformerEncoderLayer(
-            d_model=dim_feedforward,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward*2,
-            dropout=dropout_p,
-            batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layers, num_layers)
-
-        # Output projection
-        self.output_projection = nn.Linear(dim_feedforward, dim_feedforward//2)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2)
+                             * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x: Tensor of shape [batch_size, basis_dim, feature_dim]
-                containing features for each basis vector
-
-        Returns:
-            Tensor of shape [batch_size, basis_dim, output_dim]
+        Arguments:
+            x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
-        # Initial embedding
-        x = self.vector_embedding(x)
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
 
-        # Add positional encoding
-        x = x + self.pos_encoder
 
-        # Apply transformer encoder
-        x = self.transformer_encoder(x)
+class Transpose(torch.nn.Module):
+    def __init__(self, dim1, dim2):
+        super().__init__()
+        self.dim1 = dim1
+        self.dim2 = dim2
 
-        # Project output
-        return self.output_projection(x)
+    def forward(self, x):
+        return x.transpose(self.dim1, self.dim2)
 
 
 class ActorCritic(nn.Module):
-    def __init__(
-        self, basis_dim: int, action_history_size: int, action_dim: int,
-        dropout_p: float = 0.1, nhead: int = 4, transformer_layers: int = 3
-    ) -> None:
+    def __init__(self, basis_dim: int, action_history_size: int, action_dim: int, dropout_p: float = 0.1) -> None:
         super().__init__()
         self.action_dim = action_dim
         self.action_history_size = action_history_size
         self.basis_dim = basis_dim
 
-        # Per-vector feature dimension
-        # basis vector, GS vector, norm, other features
-        self.vector_feature_dim = basis_dim * 3 + 2
+        self.basis_features_hidden_dim = 256
+        self.gs_norms_features_hidden_dim = 128
+        self.action_embedding_dim = 8
+        self.action_embedding_hidden_dim = 64
 
-        # Transformer for processing basis vectors and their features
-        self.lattice_transformer = LatticeTransformer(
-            basis_dim=basis_dim,
-            feature_dim=self.vector_feature_dim,
-            nhead=nhead,
-            num_layers=transformer_layers,
-            dropout_p=dropout_p
+        # Transformer for processing basis vectors
+        self.basis_encoder = nn.Sequential(
+            nn.Linear(self.basis_dim, self.basis_features_hidden_dim),
+            PositionalEncoding(self.basis_features_hidden_dim,
+                               max_len=self.basis_dim),
+            Transpose(-2, -1),
+            nn.Linear(self.basis_dim, self.basis_features_hidden_dim),
+            nn.Flatten(-2, -1),
+            nn.Linear(self.basis_features_hidden_dim **
+                      2, self.basis_features_hidden_dim)
         )
 
-        # Global feature processor (for features that describe the whole basis)
-        self.global_processor = nn.Sequential(
-            nn.Linear(basis_dim*2 + 1 + (basis_dim*(basis_dim-1))//2, 256),
-            nn.ReLU(),
+        self.gs_norms_encoder = nn.Sequential(
+            nn.Linear(basis_dim, self.gs_norms_features_hidden_dim),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(256, 128)
+            nn.Linear(self.gs_norms_features_hidden_dim,
+                      self.gs_norms_features_hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.gs_norms_features_hidden_dim,
+                      self.gs_norms_features_hidden_dim)
         )
 
         # Action history processor
         self.action_processor = nn.Sequential(
-            nn.Embedding(action_dim + 1, 32, action_dim),
+            nn.Embedding(action_dim + 1,
+                         self.action_embedding_dim, action_dim),
             nn.Flatten(-2, -1),
-            nn.Linear(action_history_size * 32, 128),
-            nn.ReLU(),
+            nn.Linear(action_history_size * self.action_embedding_dim,
+                      self.action_embedding_hidden_dim),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(128, 64)
+            nn.Linear(self.action_embedding_hidden_dim,
+                      self.action_embedding_hidden_dim)
         )
-
-        # Combine transformer outputs
-        transformer_output_dim = (
-            basis_dim * (self.lattice_transformer.output_projection.out_features))
 
         # Actor head
         self.actor = nn.Sequential(
-            nn.Linear(transformer_output_dim + 128 + 64, 512),
-            nn.ReLU(),
+            nn.Linear(self.basis_features_hidden_dim +
+                      self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, action_dim),
             nn.Softmax(dim=-1)
@@ -125,11 +110,12 @@ class ActorCritic(nn.Module):
 
         # Critic head
         self.critic = nn.Sequential(
-            nn.Linear(transformer_output_dim + 128 + 64, 512),
-            nn.ReLU(),
+            nn.Linear(self.basis_features_hidden_dim +
+                      self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 1)
         )
@@ -137,69 +123,11 @@ class ActorCritic(nn.Module):
     def forward(self, tensordict: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
         tensordict = self.preprocess_inputs(tensordict)
 
-        batch_size = tensordict["basis"].shape[0]
+        basis = tensordict["basis"]  # [batch_size, basis_dim, basis_dim]
+        gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
 
-        # Prepare per-vector features
-        # [batch_size, basis_dim, basis_dim]
-        basis_vectors = tensordict["basis"]
-        # [batch_size, basis_dim, basis_dim]
-        gs_vectors = tensordict["gs_basis"]
-
-        # Add basis norm as a feature for each vector
-        # [batch_size, basis_dim, 1]
-        basis_norms = torch.norm(basis_vectors, dim=2, keepdim=True)
-        # [batch_size, basis_dim, 1]
-        gs_norms = torch.norm(gs_vectors, dim=2, keepdim=True)
-
-        # Create mu coefficient features (where mu[i,j] shows projection of b_i onto b*_j)
-        mu_features = tensordict.get("mu_coefficients", torch.zeros(
-            batch_size, self.basis_dim, self.basis_dim, device=basis_vectors.device))
-
-        # For each vector, prepare its feature vector
-        vector_features = []
-        for i in range(self.basis_dim):
-            # Get this vector's features
-            basis_vector = basis_vectors[:, i, :]  # [batch_size, basis_dim]
-            gs_vector = gs_vectors[:, i, :]  # [batch_size, basis_dim]
-            basis_norm = basis_norms[:, i, :]  # [batch_size, 1]
-            gs_norm = gs_norms[:, i, :]  # [batch_size, 1]
-
-            # Get this vector's mu coefficients (projections onto previous GS vectors)
-            mu_i = mu_features[:, i, :i]  # [batch_size, i]
-            # Pad to full dimension
-            padded_mu = torch.zeros(
-                batch_size, self.basis_dim, device=basis_vectors.device)
-            if i > 0:
-                padded_mu[:, :i] = mu_i
-
-            # Combine features for this vector
-            this_vector_features = torch.cat([
-                basis_vector,
-                gs_vector,
-                basis_norm,
-                gs_norm,
-                padded_mu
-            ], dim=2 if padded_mu.dim() == 3 else 1)
-
-            vector_features.append(this_vector_features)
-
-        # Stack vector features [batch_size, basis_dim, feature_dim]
-        vector_features = torch.stack(vector_features, dim=1)
-
-        # Process through transformer
-        transformed_features = self.lattice_transformer(vector_features)
-
-        # Flatten transformer output
-        flattened_features = transformed_features.reshape(batch_size, -1)
-
-        # Process global features
-        global_features = torch.cat([
-            tensordict["log_orthogonality_defect"],
-            tensordict["pairwise_angles"],
-            torch.cat([basis_norms.squeeze(2), gs_norms.squeeze(2)], dim=1)
-        ], dim=1)
-
-        global_embedding = self.global_processor(global_features)
+        basis_features = self.basis_encoder(basis)
+        gs_norms_features = self.gs_norms_encoder(gs_norms)
 
         # Process action history
         action_history = tensordict["action_history"].to(torch.long)
@@ -208,8 +136,8 @@ class ActorCritic(nn.Module):
 
         # Combine all features
         combined = torch.cat([
-            flattened_features,
-            global_embedding,
+            basis_features,
+            gs_norms_features,
             action_embedding
         ], dim=1)
 
@@ -220,65 +148,16 @@ class ActorCritic(nn.Module):
     def preprocess_inputs(tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]
 
-        batch_size, basis_dim, _ = basis.shape
-        device = basis.device
-
-        # Calculate Gram-Schmidt orthogonalization
-        gs_basis = torch.zeros_like(basis)
-        mu = torch.zeros(batch_size, basis_dim, basis_dim, device=device)
-
-        for i in range(batch_size):
-            b = basis[i]
-            gs = torch.zeros_like(b)
-
-            # GS orthogonalization
-            for j in range(basis_dim):
-                gs[j] = b[j].clone()
-                for k in range(j):
-                    # Calculate projection coefficient
-                    mu_jk = torch.dot(b[j], gs[k]) / torch.dot(gs[k], gs[k])
-                    mu[i, j, k] = mu_jk
-                    # Subtract projection
-                    gs[j] = gs[j] - mu_jk * gs[k]
-
-            gs_basis[i] = gs
-
-        # Calculate norms of basis vectors
-        basis_norms = torch.norm(basis, dim=2)
-        gs_norms = torch.norm(gs_basis, dim=2)
-
-        # Calculate orthogonality defect
-        log_basis_norms = torch.log(basis_norms)
-        log_prod_norms = torch.sum(log_basis_norms, dim=1, keepdim=True)
-        log_det_basis = torch.log(torch.abs(torch.linalg.det(basis)) + 1e-10)
-        log_orthogonality_defect = log_prod_norms - log_det_basis.unsqueeze(1)
-
-        # Calculate pairwise angles
-        normalized_basis = basis / (basis_norms.unsqueeze(2) + 1e-10)
-        cos_angles = torch.bmm(
-            normalized_basis, normalized_basis.transpose(1, 2))
-
-        # Extract upper triangular part (excluding diagonal)
-        pairwise_angles = []
-        for i in range(batch_size):
-            angles = []
-            for j in range(basis_dim):
-                for k in range(j+1, basis_dim):
-                    angles.append(cos_angles[i, j, k])
-            pairwise_angles.append(torch.stack(angles))
-
-        pairwise_angles = torch.stack(pairwise_angles)
+        # Q has orthonormal rows, hence diagonal elements of R are the GS norms
+        _, R = torch.linalg.qr(basis)
+        gs_norms = torch.diagonal(R, dim1=-2, dim2=-1)
 
         # Create and return TensorDict with all features
         return TensorDict({
             "basis": basis,
-            "gs_basis": gs_basis,
-            "basis_norms": torch.cat([basis_norms, gs_norms], dim=1),
-            "log_orthogonality_defect": log_orthogonality_defect,
-            "pairwise_angles": pairwise_angles,
-            "mu_coefficients": mu,
+            "gs_norms": gs_norms,
             "action_history": tensordict["action_history"]
-        }, batch_size=batch_size)
+        }, batch_size=[])
 
 
 class PPOConfig:
