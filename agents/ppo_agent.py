@@ -356,12 +356,15 @@ class PPOAgent(nn.Module):
             total_steps = 0
             success_count = 0
             shortness = 0.0
+            time_taken = 0.0
             num_samples = len(dataloader.dataset)
 
             for batch in tqdm(dataloader, dynamic_ncols=True):
                 states, infos = self.env.reset(options=batch)
                 log_defect_history = [infos["log_defect"]]
                 shortest_length_history = [infos["shortest_length"]]
+                time_history = [infos["time"]]
+
                 dones = torch.zeros(
                     (dataloader.batch_size, ), dtype=torch.bool)
                 episode_reward = 0
@@ -373,6 +376,7 @@ class PPOAgent(nn.Module):
                         actions)
                     log_defect_history.append(infos["log_defect"])
                     shortest_length_history.append(infos["shortest_length"])
+                    time_history.append(infos["time"])
                     dones = torch.logical_or(terminateds, truncateds)
                     episode_reward += rewards
                     steps += self.ppo_config.env_config.basis_dim
@@ -389,10 +393,12 @@ class PPOAgent(nn.Module):
                 successes = final_shortest_length - \
                     batch["shortest_vector_length"] < 1e-3
                 success_count += torch.count_nonzero(successes)
+                time_taken += (time_history[-1] - time_history[0]).sum()
 
             return {
                 "avg_reward": total_reward / num_samples,
                 "avg_steps": total_steps / num_samples,
                 "success_rate": success_count / num_samples,
-                "avg_shortness": shortness / num_samples
+                "avg_shortness": shortness / num_samples,
+                "avg_time": time_taken / num_samples
             }

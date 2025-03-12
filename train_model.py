@@ -30,6 +30,9 @@ def main():
     parser.add_argument("--max-block-size", type=int)
     parser.add_argument("--model", type=str, choices=["ppo"])
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--time-penalty-weight", type=float, default=1.0)
+    parser.add_argument("--defect-reward-weight", type=float, default=0.1)
+    parser.add_argument("--length-reward-weight", type=float, default=1.0)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -97,7 +100,14 @@ def main():
 
     # Environment and agent configuration
     env_config = ReductionEnvConfig(
-        basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size, batch_size=args.batch_size)
+        basis_dim=args.dim,
+        min_block_size=args.min_block_size,
+        max_block_size=args.max_block_size,
+        batch_size=args.batch_size,
+        time_penalty_weight=args.time_penalty_weight,
+        defect_reward_weight=args.defect_reward_weight,
+        length_reward_weight=args.length_reward_weight
+    )
 
     if args.model == "ppo":
         ppo_config = PPOConfig(env_config=env_config)
@@ -109,7 +119,7 @@ def main():
     # Training loop
     val_metrics = agent.evaluate(val_loader, device)
     logging.info(
-        f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+        f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Time: {val_metrics['avg_time']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
     # Save model at every evaluation with details in the filename
     filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
@@ -130,7 +140,7 @@ def main():
             if (step + 1) % (args.eval_interval // args.batch_size) == 0:
                 val_metrics = agent.evaluate(val_loader, device)
                 logging.info(
-                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Time: {val_metrics['avg_time']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
@@ -151,7 +161,7 @@ def main():
     best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
     test_metrics = best_agent.evaluate(test_loader, device)
     logging.info(
-        f"Test Success: {test_metrics['success_rate']:.2f}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
+        f"Test Success: {test_metrics['success_rate']:.2f}, Avg Shortness: {test_metrics['avg_shortness']}, Avg Time: {test_metrics['avg_time']}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
 
 
 if __name__ == "__main__":

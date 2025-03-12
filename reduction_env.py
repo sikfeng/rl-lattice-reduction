@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from itertools import takewhile
 import multiprocessing as mp
 from time import process_time
 from typing import Any, Dict, List, Optional, Tuple
@@ -342,6 +341,8 @@ class ReductionEnvConfig:
     batch_size: int = 1
 
     time_penalty_weight: float = 1.0
+    defect_reward_weight: float = 0.1
+    length_reward_weight: float = 1.0
 
     def __post_init__(self):
         if self.max_steps is None:
@@ -372,7 +373,8 @@ class ReductionEnvironment:
     def _get_info(self) -> Dict[str, Any]:
         return {
             "log_defect": self.log_defect_history[-1],
-            "shortest_length": self.shortest_length_history[-1]
+            "shortest_length": self.shortest_length_history[-1],
+            "time": self.time_history[-1]
         }
 
     def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
@@ -395,11 +397,11 @@ class ReductionEnvironment:
             self.bkz.lll_obj()
         self.auto_abort = BKZ.AutoAbort(self.bkz.M, self.basis.nrows)
 
-        self.start_time = process_time()
         self.action_history = []
         self.log_defect_history = [compute_log_defect(self.basis)]
         self.shortest_length_history = [
             options["shortest_original_basis_vector_length"]]
+        self.time_history = [process_time()]
         self.current_step = 0
 
         return self._get_observation(), self._get_info()
@@ -429,71 +431,21 @@ class ReductionEnvironment:
             "time_penalty": 0.0,
             "defect_reward": 0.0,
             "length_reward": 0.0,
-            "proximity_reward": 0.0,
-            "improvement_bonus": 0.0
         }
 
-        # Penalty for time taken - using a more gradual time penalty
-        elapsed_time = time.time() - self.start_time
-        rewards["time_penalty"] = self.config.time_penalty_weight * \
-            (elapsed_time / (10.0 + elapsed_time))
-
         # Compute current metrics
-        current_log_defect = compute_log_defect(self.basis)
-        self.log_defect_history.append(current_log_defect)
-        current_shortest_length = min(v.norm() for v in self.basis)
-        self.shortest_length_history.append(current_shortest_length)
+        self.time_history.append(process_time())
+        self.log_defect_history.append(compute_log_defect(self.basis))
+        self.shortest_length_history.append(
+            np.log(min(v.norm() for v in self.basis)))
 
-        # Calculate improvements from previous steps
-        if len(self.action_history) > 0:
-            # Calculate improvement from last step for log defect
-            defect_improvement = self.log_defect_history[-2] - \
-                self.log_defect_history[-1]
-
-            # Calculate improvement from last step for shortest vector length
-            length_improvement = self.shortest_length_history[-2] - \
-                self.shortest_length_history[-1]
-
-            # Normalize length improvement relative to optimal length
-            normalized_length_improvement = 0
-            # Compute how much closer we got to the optimal length
-            distance_to_optimal_before = abs(
-                self.shortest_length_history[-2] - self.shortest_vector_length)
-            distance_to_optimal_after = abs(
-                self.shortest_length_history[-1] - self.shortest_vector_length)
-
-            # Use relative improvement with a safety factor
-            if distance_to_optimal_before > 0:
-                normalized_length_improvement = (
-                    distance_to_optimal_before - distance_to_optimal_after) / (distance_to_optimal_before + 1e-6)
-
-            # Apply a bonus for reducing the shortest vector length - more linear
-            if length_improvement > 0:
-                rewards["length_reward"] = 7.0 * normalized_length_improvement
-
-            # Apply a bonus for improving the defect - use a more linear reward function
-            if defect_improvement > 0:
-                # More linear scaling with normalization
-                rewards["defect_reward"] = 5.0 * \
-                    min(defect_improvement / (current_log_defect + 1e-6), 1.0)
-            elif defect_improvement < 0:
-                # Small penalty for regression with diminishing effect
-                rewards["defect_reward"] = -0.5 * \
-                    min(abs(defect_improvement) /
-                        (current_log_defect + 1e-6), 0.5)
-
-            # Calculate proximity reward - smoother function
-            if self.shortest_vector_length > 0:
-                proximity_ratio = current_shortest_length / self.shortest_vector_length
-
-                # Sigmoid-like reward that approaches maximum as we get closer to optimal
-                if proximity_ratio < 10.0:  # Increased valid range
-                    rewards["proximity_reward"] = 3.0 / \
-                        (1.0 + abs(proximity_ratio - 1.0))
-
-            # Smaller improvement bonus to avoid overshadowing the main rewards
-            if defect_improvement > 0 or length_improvement > 0:
-                rewards["improvement_bonus"] = 0.5
+        rewards["time_penalty"] = self.config.time_penalty_weight * \
+            (self.time_history[-1] - self.time_history[-2])
+        rewards["defect_reward"] = self.config.defect_reward_weight * \
+            (self.log_defect_history[-1] - self.log_defect_history[-2])
+        rewards["length_reward"] = self.config.length_reward_weight * \
+            (self.shortest_length_history[-1] -
+             self.shortest_length_history[-2])
 
         # Clip final reward to prevent extreme values
         total_reward = sum(rewards.values())
@@ -516,7 +468,7 @@ class ReductionEnvironment:
         if len(self.action_history) >= self.config.max_steps:
             return True
 
-        if process_time() - self.start_time >= self.config.time_limit:
+        if process_time() - self.time_history[0] >= self.config.time_limit:
             return True
 
         return False
