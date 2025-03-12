@@ -130,7 +130,7 @@ def main():
             if (step + 1) % (args.eval_interval // args.batch_size) == 0:
                 val_metrics = agent.evaluate(val_loader, device)
                 logging.info(
-                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)

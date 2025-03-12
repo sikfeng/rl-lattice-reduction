@@ -355,6 +355,7 @@ class PPOAgent(nn.Module):
             total_reward = 0.0
             total_steps = 0
             success_count = 0
+            shortness = 0.0
             num_samples = len(dataloader.dataset)
 
             for batch in tqdm(dataloader, dynamic_ncols=True):
@@ -383,12 +384,15 @@ class PPOAgent(nn.Module):
                 # Check success
                 final_shortest_length = shortest_length_history[-1]
 
+                shortness += (final_shortest_length /
+                              batch["shortest_vector_length_gh"]).sum()
                 successes = final_shortest_length - \
                     batch["shortest_vector_length"] < 1e-3
                 success_count += torch.count_nonzero(successes)
 
             return {
-                'avg_reward': total_reward / num_samples,
-                'avg_steps': total_steps / num_samples,
-                'success_rate': success_count / num_samples
+                "avg_reward": total_reward / num_samples,
+                "avg_steps": total_steps / num_samples,
+                "success_rate": success_count / num_samples,
+                "avg_shortness": shortness / num_samples
             }
