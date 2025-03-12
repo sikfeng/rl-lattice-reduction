@@ -1,6 +1,7 @@
 import math
 from typing import Dict, Tuple, Union
 
+from einops import repeat
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
@@ -15,9 +16,8 @@ from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 class PositionalEncoding(nn.Module):
 
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+    def __init__(self, d_model: int, max_len: int = 5000):
         super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
 
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2)
@@ -33,17 +33,34 @@ class PositionalEncoding(nn.Module):
             x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
         x = x + self.pe[:x.size(0)]
-        return self.dropout(x)
+        return x
 
 
-class Transpose(torch.nn.Module):
-    def __init__(self, dim1, dim2):
+class BasisEncoder(nn.Module):
+    def __init__(self, basis_dim, embedding_dim=512, dropout_p=0.1):
         super().__init__()
-        self.dim1 = dim1
-        self.dim2 = dim2
+        self.cls_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.pos_embedding = PositionalEncoding(
+            embedding_dim, max_len=basis_dim)
 
-    def forward(self, x):
-        return x.transpose(self.dim1, self.dim2)
+        self.projection_layer = nn.Linear(basis_dim, embedding_dim)
+
+        self.dropout = nn.Dropout(dropout_p)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim, nhead=8)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=6)
+
+    def forward(self, basis):
+        x = self.projection_layer(basis)
+        x = self.pos_embedding(x)
+        cls_token = repeat(self.cls_token, '1 1 d -> b 1 d', b=basis.size(0))
+        x = torch.cat([cls_token, x], dim=1)
+        x = self.dropout(x)
+        x = self.transformer_encoder(x)
+
+        return x[:, 0]  # use embedding of cls_token
 
 
 class ActorCritic(nn.Module):
@@ -59,17 +76,8 @@ class ActorCritic(nn.Module):
         self.action_embedding_hidden_dim = 64
 
         # Transformer for processing basis vectors
-        self.basis_encoder = nn.Sequential(
-            Transpose(-2, -1),
-            nn.Linear(self.basis_dim, self.basis_features_hidden_dim),
-            PositionalEncoding(self.basis_features_hidden_dim,
-                               max_len=self.basis_dim),
-            Transpose(-2, -1),
-            nn.Linear(self.basis_dim, self.basis_features_hidden_dim), # TODO: the following network looses the invariance over the last axis that we were trying to keep
-            nn.Flatten(-2, -1),
-            nn.Linear(self.basis_features_hidden_dim **
-                      2, self.basis_features_hidden_dim)
-        )
+        self.basis_encoder = BasisEncoder(
+            basis_dim=basis_dim, embedding_dim=self.basis_features_hidden_dim)
 
         self.gs_norms_encoder = nn.Sequential(
             nn.Linear(basis_dim, self.gs_norms_features_hidden_dim),
