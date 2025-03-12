@@ -25,7 +25,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(1, max_len, d_model)
         pe[0, :, 0::2] = torch.sin(position * div_term)
         pe[0, :, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
+        self.register_buffer("pe", pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -55,7 +55,7 @@ class BasisEncoder(nn.Module):
     def forward(self, basis):
         x = self.projection_layer(basis)
         x = self.pos_embedding(x)
-        cls_token = repeat(self.cls_token, '1 1 d -> b 1 d', b=basis.size(0))
+        cls_token = repeat(self.cls_token, "1 1 d -> b 1 d", b=basis.size(0))
         x = torch.cat([cls_token, x], dim=1)
         x = self.dropout(x)
         x = self.transformer_encoder(x)
