@@ -360,9 +360,6 @@ class ReductionEnvironment:
         basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
         basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
-        # For an ideal model, it should not have to use the action history,
-        # but the model frequently repeats the immediate last action and gets stuck.
-        # Hence, this is an attempt to teach the model not to do that.
         last_actions = torch.tensor(
             self.action_history[-self.config.action_history_size:], dtype=torch.float32)
         history = torch.cat([torch.full(
