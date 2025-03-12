@@ -109,7 +109,7 @@ def main():
     # Training loop
     val_metrics = agent.evaluate(val_loader, device)
     logging.info(
-        f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+        f"Pretraining, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
 
     # Save model at every evaluation with details in the filename
     filename = f"pretraining-valSuccess{val_metrics['success_rate']:.2f}.pth"
