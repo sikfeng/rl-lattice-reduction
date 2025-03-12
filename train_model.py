@@ -37,7 +37,7 @@ def main():
 
     # Set default for max_block_size
     if args.max_block_size is None:
-        args.max_block_size = min(args.dim, 45)
+        args.max_block_size = args.dim
 
     # Validation
     if args.min_block_size < 2:
