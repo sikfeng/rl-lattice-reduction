@@ -48,7 +48,7 @@ class BasisEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout_p)
 
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=8)
+            d_model=embedding_dim, nhead=8, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer, num_layers=6)
 
