@@ -60,6 +60,16 @@ def log_defect(basis):
 
 
 def gaussian_heuristic(basis: np.ndarray):
+    """
+    Calculate the length of the shortest vector predicted by the Gaussian Heuristic
+
+    Parameters:
+        basis (np.ndarray): The input basis matrix as a 2-dimensional numpy array.
+
+    Returns:
+        float: The length of the shortest vector predicted by the Gaussian Heuristic.
+
+    """
     _, R = np.linalg.qr(basis)
     gs_norms = np.diagonal(R)
     gh_squared = fpylll.util.gaussian_heuristic(np.square(gs_norms))
