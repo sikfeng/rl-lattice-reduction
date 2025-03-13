@@ -439,11 +439,6 @@ class ReductionEnvironment:
             "length_reward": 0.0,
         }
 
-        # Compute current metrics
-        self.time_history.append(process_time())
-        self.log_defect_history.append(compute_log_defect(self.basis))
-        self.shortest_length_history.append(min(v.norm() for v in self.basis))
-
         rewards["time_penalty"] = self.config.time_penalty_weight * \
             (self.time_history[-1] - self.time_history[-2])
         rewards["defect_reward"] = self.config.defect_reward_weight * \
