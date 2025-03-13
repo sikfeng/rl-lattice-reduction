@@ -516,7 +516,7 @@ class VectorizedReductionEnvironment:
 
         self.closed = False
 
-    def reset(self, options: TensorDict) -> List[Tuple[Dict[str, torch.Tensor], Dict[str, Any]]]:
+    def reset(self, options: TensorDict) -> Tuple[TensorDict, TensorDict]:
         options_list = options.unbind(dim=0)
         for remote, action in zip(self.remotes, options_list):
             remote.send(('reset', action))
