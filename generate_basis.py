@@ -66,21 +66,11 @@ def gaussian_heuristic(basis: np.ndarray):
     return gh_squared ** 0.5
 
 
-def generate_uniform(n, low=-50, high=50):
-    """
-    Generate a uniform random integer matrix.
-
-    This function generates a matrix of random integers within the specified range.
-
-    Parameters:
-        n (int): The number of rows and columns in the matrix.
-        low (int, optional): The lower bound of the range (default is 0).
-        high (int, optional): The upper bound of the range (default is 100).
-
-    Returns:
-        numpy.ndarray: A matrix of random integers within the specified range.
-    """
-    return np.random.randint(low=low, high=high, size=(n, n), dtype=int)
+def generate_uniform(n, b):
+    basis = IntegerMatrix.random(n, "uniform", bits=b)
+    np_basis = np.zeros((n, n), dtype=int)
+    basis.to_matrix(np_basis)
+    return np_basis
 
 
 def generate_qary(n, q, k):
@@ -108,7 +98,7 @@ def func(_, n, distribution):
     while True:
         try:
             if distribution == "uniform":
-                basis = generate_uniform(n)
+                basis = generate_uniform(n, b=6)
             elif distribution == "qary":
                 basis = generate_qary(n, q=47, k=1)
             elif distribution == "ntrulike":
