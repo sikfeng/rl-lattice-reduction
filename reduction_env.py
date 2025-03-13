@@ -454,10 +454,6 @@ class ReductionEnvironment:
     def _check_termination(self):
         """Check if episode has terminated"""
 
-        # BKZ tour did not modify anything
-        if self.clean:
-            return True
-
         if self.auto_abort.test_abort():
             return True
 
