@@ -389,9 +389,9 @@ class PPOAgent(nn.Module):
                 final_shortest_length = shortest_length_history[-1]
 
                 shortness += (final_shortest_length /
-                              batch["shortest_vector_length_gh"]).sum()
-                successes = final_shortest_length - \
-                    batch["shortest_vector_length"] < 1e-3
+                              batch["gaussian_heuristic"]).sum()
+                successes = final_shortest_length < 1.05 * \
+                    batch["gaussian_heuristic"]
                 success_count += torch.count_nonzero(successes)
                 time_taken += (time_history[-1] - time_history[0]).sum()
 

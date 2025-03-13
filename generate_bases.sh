@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # List of dimensions to generate bases for
-dims=(16 24 32)
+dims=(16 32 64 96 128)
 dists=(uniform qary ntrulike)
 
 for dim in "${dims[@]}"; do

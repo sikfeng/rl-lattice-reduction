@@ -3,6 +3,7 @@ from functools import partial
 import multiprocessing as mp
 from pathlib import Path
 
+import fpylll
 from fpylll import IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
@@ -53,19 +54,16 @@ def log_defect(basis):
     log_prod_norms = np.sum(np.log(np.linalg.norm(basis, axis=1)))
     # Compute the absolute value of the determinant (i.e. the volume).
     det = abs(np.linalg.det(basis))
-    return log_prod_norms - np.log(det) if det != 0 else float('inf')
+    if det == 0:
+        raise ValueError("Determinant is zero")
+    return log_prod_norms - np.log(det)
 
 
 def gaussian_heuristic(basis: np.ndarray):
-    n = basis.shape[0]
-
-    gram_matrix = np.dot(basis, basis.T)
-    det = np.abs(np.linalg.det(gram_matrix))
-    vol_L = np.sqrt(det)
-
-    # gh(L) = sqrt(n / (2 * pi * e)) * Vol(L)^(1 / n)
-    gh = np.sqrt(n / (2 * np.pi * np.e)) * vol_L**(1 / n)
-    return gh
+    _, R = np.linalg.qr(basis)
+    gs_norms = np.diagonal(R)
+    gh_squared = fpylll.util.gaussian_heuristic(np.square(gs_norms))
+    return gh_squared ** 0.5
 
 
 def generate_uniform(n, low=-50, high=50):
@@ -136,11 +134,11 @@ def func(_, n, distribution):
             shortest_lll_basis_vector_length = np.min(lll_basis_vector_lengths)
 
             # Calculate Gaussian heuristic
-            shortest_vector_length_gh = gaussian_heuristic(basis)
+            gh = gaussian_heuristic(basis)
 
             # Calculate shortest vector and its length
-            shortest_vector = svp(basis)
-            shortest_vector_length = np.linalg.norm(shortest_vector)
+            # shortest_vector = svp(basis)
+            # shortest_vector_length = np.linalg.norm(shortest_vector)
 
             # Store all the data
             return {
@@ -149,8 +147,8 @@ def func(_, n, distribution):
                 "original_log_defect": original_log_defect,
                 "lll_log_defect": defect,
                 "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
-                "shortest_vector_length": shortest_vector_length,
-                "shortest_vector_length_gh": shortest_vector_length_gh,
+                # "shortest_vector_length": shortest_vector_length,
+                "gaussian_heuristic": gh,
             }
         except (ReductionError, ValueError, RuntimeError) as e:
             continue
