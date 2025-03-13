@@ -1,10 +1,11 @@
 import argparse
 from functools import partial
+import math
 import multiprocessing as mp
 from pathlib import Path
 
 import fpylll
-from fpylll import IntegerMatrix, LLL, ReductionError, SVP
+from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
 
@@ -62,18 +63,22 @@ def log_defect(basis):
 def gaussian_heuristic(basis: np.ndarray):
     """
     Calculate the length of the shortest vector predicted by the Gaussian Heuristic
-
     Parameters:
         basis (np.ndarray): The input basis matrix as a 2-dimensional numpy array.
-
     Returns:
         float: The length of the shortest vector predicted by the Gaussian Heuristic.
-
     """
-    _, R = np.linalg.qr(basis)
-    gs_norms = np.diagonal(R)
-    gh_squared = fpylll.util.gaussian_heuristic(np.square(gs_norms))
-    return gh_squared ** 0.5
+    B = IntegerMatrix.from_matrix(basis)
+    M = GSO.Mat(B)
+    M.update_gso()
+
+    # Get the squared norms of the Gram-Schmidt vectors
+    gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
+
+    # Calculate the Gaussian Heuristic
+    gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
+
+    return math.sqrt(gh_squared)
 
 
 def generate_uniform(n, b):
