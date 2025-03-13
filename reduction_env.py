@@ -436,8 +436,7 @@ class ReductionEnvironment:
         # Compute current metrics
         self.time_history.append(process_time())
         self.log_defect_history.append(compute_log_defect(self.basis))
-        self.shortest_length_history.append(
-            np.log(min(v.norm() for v in self.basis)))
+        self.shortest_length_history.append(min(v.norm() for v in self.basis))
 
         rewards["time_penalty"] = self.config.time_penalty_weight * \
             (self.time_history[-1] - self.time_history[-2])
