@@ -381,7 +381,7 @@ class ReductionEnvironment:
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
         self.lll_log_defect = options["lll_log_defect"]
         self.shortest_lll_basis_vector_length = options["shortest_lll_basis_vector_length"]
-        #self.shortest_vector_length = options["shortest_vector_length"]
+        # self.shortest_vector_length = options["shortest_vector_length"]
 
         self.tracer = normalize_tracer(True)
         if not isinstance(self.tracer, Tracer):
