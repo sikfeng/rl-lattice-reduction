@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import multiprocessing as mp
 from time import process_time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fpylll import BKZ, Enumeration, EnumerationError, FPLLL, GSO, IntegerMatrix, LLL
 from fpylll.util import adjust_radius_to_gh_bound
