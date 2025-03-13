@@ -415,7 +415,7 @@ class ReductionEnvironment:
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         block_size = self._action_to_block(action)
         self.clean = self.bkz.tour(BKZ.EasyParam(
-            block_size=block_size, max_loops=0, max_time=0, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
+            block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
 
         self.action_history.append(action)
         self._update_history()
