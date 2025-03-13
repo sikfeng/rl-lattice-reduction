@@ -335,7 +335,7 @@ class ReductionEnvConfig:
     max_steps: Optional[int] = None
     min_block_size: int = None  # inclusive
     max_block_size: int = None  # inclusive
-    time_limit: float = 300
+    time_limit: float = 1.0
     basis_dim: int = None
     action_history_size: int = 10
     batch_size: int = 1

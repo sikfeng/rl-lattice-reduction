@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--time-penalty-weight", type=float, default=1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
+    parser.add_argument("--time-limit", type=float, default=1.0)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -106,7 +107,8 @@ def main():
         batch_size=args.batch_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
-        length_reward_weight=args.length_reward_weight
+        length_reward_weight=args.length_reward_weight,
+        time_limit=args.time_limit
     )
 
     if args.model == "ppo":
