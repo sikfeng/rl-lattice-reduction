@@ -115,9 +115,9 @@ def func(_, n, distribution):
             if distribution == "uniform":
                 basis = generate_uniform(n, b=6)
             elif distribution == "qary":
-                basis = generate_qary(n, q=47, k=1)
+                basis = generate_qary(n, q=11887, k=3)
             elif distribution == "ntrulike":
-                basis = generate_ntrulike(n, q=127)
+                basis = generate_ntrulike(n, q=11887)
 
             # Calculate the length of the shortest basis vector in the original basis
             original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
