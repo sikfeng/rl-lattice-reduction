@@ -418,12 +418,18 @@ class ReductionEnvironment:
             block_size=block_size, max_loops=0, max_time=0, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
 
         self.action_history.append(action)
+        self._update_history()
 
         self.terminated = self._check_termination()
         self.truncated = self._check_truncation()
         self.current_step += 1
 
         return self._get_observation(), self._compute_reward(), self._check_termination(), self._check_truncation(), self._get_info()
+
+    def _update_history(self):
+        self.time_history.append(process_time())
+        self.log_defect_history.append(compute_log_defect(self.basis))
+        self.shortest_length_history.append(min(v.norm() for v in self.basis))
 
     def _compute_reward(self) -> float:
         # Initialize reward components dictionary for better tracking
