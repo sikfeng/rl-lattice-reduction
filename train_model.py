@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--max-block-size", type=int)
     parser.add_argument("--model", type=str, choices=["ppo"])
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--time-penalty-weight", type=float, default=1.0)
+    parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
     parser.add_argument("--time-limit", type=float, default=1.0)

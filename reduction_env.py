@@ -340,7 +340,7 @@ class ReductionEnvConfig:
     action_history_size: int = 10
     batch_size: int = 1
 
-    time_penalty_weight: float = 1.0
+    time_penalty_weight: float = -1.0
     defect_reward_weight: float = 0.1
     length_reward_weight: float = 1.0
 
