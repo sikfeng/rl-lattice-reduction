@@ -397,7 +397,8 @@ class ReductionEnvironment:
             self.bkz.lll_obj()
         self.auto_abort = BKZ.AutoAbort(self.bkz.M, self.basis.nrows)
 
-        self.action_history = []
+        # TODO: min_block_size may not be 2!
+        self.action_history = [0]  # initial basis is always LLL reduced
         self.log_defect_history = [compute_log_defect(self.basis)]
         self.shortest_length_history = [
             options["shortest_original_basis_vector_length"]]

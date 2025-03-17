@@ -50,7 +50,8 @@ class ActorCritic(nn.Module):
 
         # Actor head
         self.actor = nn.Sequential(
-            nn.Linear(self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.gs_norms_features_hidden_dim +
+                      self.action_embedding_hidden_dim, 512),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
@@ -62,7 +63,8 @@ class ActorCritic(nn.Module):
 
         # Critic head
         self.critic = nn.Sequential(
-            nn.Linear(self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.gs_norms_features_hidden_dim +
+                      self.action_embedding_hidden_dim, 512),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
@@ -165,11 +167,21 @@ class PPOAgent(nn.Module):
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
+    def _mask_logits(self, logits, action_history):
+        mask = torch.ones((logits.size(0), self.action_dim, ),
+                          dtype=torch.bool, device=action_history.device)
+        for i, action in enumerate(action_history[:, -1]):
+            mask[i, :int(action.item())] = False
+        logits = logits.masked_fill(~mask, float('-inf'))
+        return logits
+
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
             logits, value = self.actor_critic(state)
 
-        dist = torch.distributions.Categorical(logits=logits)
+        masked_logits = self._mask_logits(logits, state["action_history"])
+
+        dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
 
         return action, dist.log_prob(action), value
