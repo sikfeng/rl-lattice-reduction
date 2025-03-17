@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from agents.ppo_agent import PPOAgent, PPOConfig
+from ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
 
@@ -28,12 +28,11 @@ def main():
                         choices=distributions)
     parser.add_argument("--min-block-size", type=int, default=2)
     parser.add_argument("--max-block-size", type=int)
-    parser.add_argument("--model", type=str, choices=["ppo"])
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
-    parser.add_argument("--time-limit", type=float, default=1.0)
+    parser.add_argument("--time-limit", type=float, default=300.0)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -58,11 +57,8 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    if args.model == "ppo":
-        checkpoint_dir = Path(
-            f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
-    else:
-        raise ValueError("Invalid model type provided.")
+    checkpoint_dir = Path(
+        f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -111,9 +107,8 @@ def main():
         time_limit=args.time_limit
     )
 
-    if args.model == "ppo":
-        ppo_config = PPOConfig(env_config=env_config)
-        agent = PPOAgent(ppo_config=ppo_config).to(device)
+    ppo_config = PPOConfig(env_config=env_config)
+    agent = PPOAgent(ppo_config=ppo_config).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
@@ -157,8 +152,7 @@ def main():
 
     logging.info(f"Best Val Success: {best_success:.2f}")
 
-    if args.model == "ppo":
-        best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+    best_agent = PPOAgent(ppo_config=ppo_config).to(device)
 
     best_agent.load_state_dict(torch.load(checkpoint_dir / best_filename))
     test_metrics = best_agent.evaluate(test_loader, device)

@@ -7,11 +7,9 @@ from fpylll import FPLLL
 import numpy as np
 import torch
 
-from agents.ddpg_agent import DDPGAgent, DDPGConfig
-from agents.dqn_agent import DQNAgent, DQNConfig
-from agents.ppo_agent import PPOAgent, PPOConfig
+from ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
-from reduction_env import BKZEnvConfig
+from reduction_env import ReductionEnvConfig
 
 
 def main():
@@ -21,10 +19,10 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--chkpt", "--checkpoint", type=str)
     parser.add_argument("-d", "--dim", type=int, default=4)
-    parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform"])
+    parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform", "qary", "ntrulike"])
     parser.add_argument("--min_block_size", type=int, default=2)
     parser.add_argument("--max_block_size", type=int)
-    parser.add_argument("--model", type=str, choices=["ddpg", "dqn", "ppo"])
+    parser.add_argument("--time-limit", type=float, default=300.0)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -76,17 +74,16 @@ def main():
     )
 
     # Environment and agent configuration
-    env_config = BKZEnvConfig(basis_dim=args.dim, min_block_size=args.min_block_size, max_block_size=args.max_block_size)
+    env_config = ReductionEnvConfig(
+        basis_dim=args.dim,
+        min_block_size=args.min_block_size,
+        max_block_size=args.max_block_size,
+        batch_size=1,
+        time_limit=args.time_limit
+    )
 
-    if args.model == "ddpg":
-        ddpg_config = DDPGConfig(env_config=env_config)
-        best_agent = DDPGAgent(ddpg_config=ddpg_config).to(device)
-    elif args.model == "dqn":
-        dqn_config = DQNConfig(env_config=env_config)
-        best_agent = DQNAgent(dqn_config=dqn_config).to(device)
-    elif args.model == "ppo":
-        ppo_config = PPOConfig(env_config=env_config)
-        best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+    ppo_config = PPOConfig(env_config=env_config)
+    best_agent = PPOAgent(ppo_config=ppo_config).to(device)
 
     best_agent.load_state_dict(torch.load(args.chkpt))
     total_params = sum(p.numel() for p in best_agent.parameters())
