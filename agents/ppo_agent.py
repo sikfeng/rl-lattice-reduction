@@ -379,7 +379,7 @@ class PPOAgent(nn.Module):
                     time_history.append(infos["time"])
                     dones = torch.logical_or(terminateds, truncateds)
                     episode_reward += rewards
-                    steps += self.ppo_config.env_config.basis_dim
+                    steps += self.ppo_config.env_config.batch_size
                     states = next_states
 
                 total_reward += episode_reward.sum().item()
