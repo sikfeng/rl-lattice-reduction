@@ -1,7 +1,5 @@
-import math
 from typing import Dict, Tuple, Union
 
-from einops import repeat
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
@@ -14,55 +12,6 @@ from tqdm import tqdm
 from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
 
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model: int, max_len: int = 5000):
-        super().__init__()
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2)
-                             * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(1, max_len, d_model)
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Arguments:
-            x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
-        """
-        x = x + self.pe[:x.size(0)]
-        return x
-
-
-class BasisEncoder(nn.Module):
-    def __init__(self, basis_dim, embedding_dim=512, dropout_p=0.1):
-        super().__init__()
-        self.cls_token = nn.Parameter(torch.randn(1, 1, embedding_dim))
-        self.pos_embedding = PositionalEncoding(
-            embedding_dim, max_len=basis_dim)
-
-        self.projection_layer = nn.Linear(basis_dim, embedding_dim)
-
-        self.dropout = nn.Dropout(dropout_p)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, nhead=8, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=6)
-
-    def forward(self, basis):
-        x = self.projection_layer(basis)
-        x = self.pos_embedding(x)
-        cls_token = repeat(self.cls_token, "1 1 d -> b 1 d", b=basis.size(0))
-        x = torch.cat([cls_token, x], dim=1)
-        x = self.dropout(x)
-        x = self.transformer_encoder(x)
-
-        return x[:, 0]  # use embedding of cls_token
-
-
 class ActorCritic(nn.Module):
     def __init__(self, basis_dim: int, action_history_size: int, action_dim: int, dropout_p: float = 0.1) -> None:
         super().__init__()
@@ -70,14 +19,9 @@ class ActorCritic(nn.Module):
         self.action_history_size = action_history_size
         self.basis_dim = basis_dim
 
-        self.basis_features_hidden_dim = 256
         self.gs_norms_features_hidden_dim = 128
         self.action_embedding_dim = 8
         self.action_embedding_hidden_dim = 64
-
-        # Transformer for processing basis vectors
-        self.basis_encoder = BasisEncoder(
-            basis_dim=basis_dim, embedding_dim=self.basis_features_hidden_dim)
 
         self.gs_norms_encoder = nn.Sequential(
             nn.Linear(basis_dim, self.gs_norms_features_hidden_dim),
@@ -106,8 +50,7 @@ class ActorCritic(nn.Module):
 
         # Actor head
         self.actor = nn.Sequential(
-            nn.Linear(self.basis_features_hidden_dim +
-                      self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
@@ -119,8 +62,7 @@ class ActorCritic(nn.Module):
 
         # Critic head
         self.critic = nn.Sequential(
-            nn.Linear(self.basis_features_hidden_dim +
-                      self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.gs_norms_features_hidden_dim + self.action_embedding_hidden_dim, 512),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(512, 512),
@@ -132,10 +74,8 @@ class ActorCritic(nn.Module):
     def forward(self, tensordict: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
         tensordict = self.preprocess_inputs(tensordict)
 
-        basis = tensordict["basis"]  # [batch_size, basis_dim, basis_dim]
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
 
-        basis_features = self.basis_encoder(basis)
         gs_norms_features = self.gs_norms_encoder(gs_norms)
 
         # Process action history
@@ -145,7 +85,6 @@ class ActorCritic(nn.Module):
 
         # Combine all features
         combined = torch.cat([
-            basis_features,
             gs_norms_features,
             action_embedding
         ], dim=1)
@@ -163,7 +102,6 @@ class ActorCritic(nn.Module):
 
         # Create and return TensorDict with all features
         return TensorDict({
-            "basis": basis,
             "gs_norms": gs_norms,
             "action_history": tensordict["action_history"]
         }, batch_size=[])
