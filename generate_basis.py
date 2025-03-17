@@ -165,8 +165,8 @@ def main():
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str, choices=distributions)
     parser.add_argument("--train-samples", type=int, default=10_000)
-    parser.add_argument("--val-samples", type=int, default=4_000)
-    parser.add_argument("--test-samples", type=int, default=4_000)
+    parser.add_argument("--val-samples", type=int, default=1_000)
+    parser.add_argument("--test-samples", type=int, default=1_000)
     parser.add_argument("--processes", type=int, default=20)
     args = parser.parse_args()
 

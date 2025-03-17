@@ -12,12 +12,11 @@ for dim in "${dims[@]}"; do
 done
 
 dims=(96 128)
-dists=(qary ntrulike)
+dists=(uniform qary)
 
 for dim in "${dims[@]}"; do
     echo "Generating random basis for n = ${dim}"
-    python generate_basis.py -d "${dim}" --distribution uniform --train-samples 1000 --val-samples 100 --test-samples 100
     for dist in "${dists[@]}"; do
-        python generate_basis.py -d "${dim}" --distribution "${dist}"
+        python generate_basis.py -d "${dim}" --distribution "${dist}" --train-samples 10000 --val-samples 1000 --test-samples 1000
     done
 done
