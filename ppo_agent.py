@@ -11,7 +11,7 @@ from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 from tqdm import tqdm
 
-from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
+from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
 
 class PositionalEncoding(nn.Module):
@@ -171,13 +171,12 @@ class ActorCritic(nn.Module):
 
 class PPOConfig:
     def __init__(self, env_config: ReductionEnvConfig = None, lr=3e-4, gamma=0.99, gae_lambda=0.95,
-                 clip_epsilon=0.2, epochs=4, batch_size=64, dropout_p=0.2):
+                 clip_epsilon=0.2, epochs=4, dropout_p=0.2):
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_epsilon = clip_epsilon
         self.epochs = epochs
-        self.batch_size = batch_size
         self.dropout_p = dropout_p
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
@@ -209,10 +208,7 @@ class PPOAgent(nn.Module):
             transform=sample_transform
         )
 
-        self.env = VectorizedReductionEnvironment(self.ppo_config.env_config)
-
-    def __del__(self):
-        self.env.close()
+        self.env = ReductionEnvironment(self.ppo_config.env_config)
 
     def store_transition(self, state, action, log_prob, reward, done, next_state):
         td = TensorDict({
@@ -241,7 +237,7 @@ class PPOAgent(nn.Module):
         return action, dist.log_prob(action), value
 
     def update(self, device: Union[torch.device, str]) -> None:
-        if len(self.replay_buffer) < (self.ppo_config.batch_size / self.ppo_config.env_config.batch_size):
+        if len(self.replay_buffer) < self.ppo_config.env_config.batch_size:
             return None
 
         batch = self.replay_buffer.sample(len(self.replay_buffer)).to(device)
@@ -324,26 +320,30 @@ class PPOAgent(nn.Module):
         self.train()
 
         # Reset environment
-        states, _ = self.env.reset(options=batch)
-        dones = torch.zeros(
-            self.ppo_config.env_config.batch_size, dtype=torch.bool)
+        state, _ = self.env.reset(options=batch[0])
+        done = False
 
+        state = TensorDict({k: v.unsqueeze(0).to(device)
+                           for k, v in state.items()}, batch_size=[])
         # Run episode
-        while not torch.all(dones):
-            actions, log_probs, _ = self.get_action(states.to(device))
-            next_states, rewards, terminateds, truncateds, _ = self.env.step(
-                actions)
-            dones = torch.logical_or(terminateds, truncateds)
+        while not done:
+            action, log_prob, _ = self.get_action(state.to(device))
+            next_state, reward, terminated, truncated, _ = self.env.step(
+                action)
+            done = terminated or truncated
+
+            next_state = TensorDict({k: v.unsqueeze(0).to(device)
+                                    for k, v in next_state.items()}, batch_size=[])
 
             self.store_transition(
-                states,
-                actions,
-                log_probs,
-                rewards,
-                dones,
-                next_states
+                state,
+                action,
+                log_prob,
+                torch.tensor([reward], dtype=torch.float32).to(device),
+                torch.tensor([done], dtype=torch.bool).to(device),
+                next_state
             )
-            states = next_states
+            state = next_state
 
         # Update agent
         avg_reward = self.update(device)
@@ -360,40 +360,41 @@ class PPOAgent(nn.Module):
             num_samples = len(dataloader.dataset)
 
             for batch in tqdm(dataloader, dynamic_ncols=True):
-                states, infos = self.env.reset(options=batch)
-                log_defect_history = [infos["log_defect"]]
-                shortest_length_history = [infos["shortest_length"]]
-                time_history = [infos["time"]]
+                state, info = self.env.reset(options=batch[0])
+                log_defect_history = [info["log_defect"]]
+                shortest_length_history = [info["shortest_length"]]
+                time_history = [info["time"]]
 
-                dones = torch.zeros(
-                    (dataloader.batch_size, ), dtype=torch.bool)
+                done = False
                 episode_reward = 0
                 steps = 0
 
-                while not torch.all(dones):
-                    actions, _, _ = self.get_action(states.to(device))
-                    next_states, rewards, terminateds, truncateds, infos = self.env.step(
-                        actions)
-                    log_defect_history.append(infos["log_defect"])
-                    shortest_length_history.append(infos["shortest_length"])
-                    time_history.append(infos["time"])
-                    dones = torch.logical_or(terminateds, truncateds)
-                    episode_reward += rewards
-                    steps += self.ppo_config.env_config.batch_size
-                    states = next_states
+                while not done:
+                    state = TensorDict({k: v.unsqueeze(0).to(device)
+                                       for k, v in state.items()}, batch_size=[])
+                    action, _, _ = self.get_action(state.to(device))
+                    next_state, reward, terminated, truncated, info = self.env.step(
+                        action)
+                    log_defect_history.append(info["log_defect"])
+                    shortest_length_history.append(info["shortest_length"])
+                    time_history.append(info["time"])
+                    done = terminated or truncated
+                    episode_reward += reward
+                    steps += 1
+                    state = next_state
 
-                total_reward += episode_reward.sum().item()
+                total_reward += episode_reward.item()
                 total_steps += steps
 
                 # Check success
                 final_shortest_length = shortest_length_history[-1]
 
                 shortness += (final_shortest_length /
-                              batch["gaussian_heuristic"]).sum()
+                              batch["gaussian_heuristic"]).item()
                 successes = final_shortest_length < 1.05 * \
                     batch["gaussian_heuristic"]
                 success_count += torch.count_nonzero(successes)
-                time_taken += (time_history[-1] - time_history[0]).sum()
+                time_taken += time_history[-1] - time_history[0]
 
             return {
                 "avg_reward": total_reward / num_samples,

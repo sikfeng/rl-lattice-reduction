@@ -28,7 +28,6 @@ def main():
                         choices=distributions)
     parser.add_argument("--min-block-size", type=int, default=2)
     parser.add_argument("--max-block-size", type=int)
-    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
@@ -90,7 +89,7 @@ def main():
         data_dir=data_dir,
         dimension=args.dim,
         distribution_type=args.distribution,
-        batch_size=args.batch_size,
+        batch_size=1,
         shuffle=True,
         device=device
     )
@@ -100,7 +99,6 @@ def main():
         basis_dim=args.dim,
         min_block_size=args.min_block_size,
         max_block_size=args.max_block_size,
-        batch_size=args.batch_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
         length_reward_weight=args.length_reward_weight,
@@ -134,7 +132,7 @@ def main():
             agent.train_step(batch, device)
 
             # Evaluation
-            if (step + 1) % (args.eval_interval // args.batch_size) == 0:
+            if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
                 logging.info(
                     f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Time: {val_metrics['avg_time']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
