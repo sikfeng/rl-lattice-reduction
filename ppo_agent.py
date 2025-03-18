@@ -1,5 +1,7 @@
+import math
 from typing import Dict, Tuple, Union
 
+from einops import repeat
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
@@ -12,6 +14,64 @@ from tqdm import tqdm
 from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 64):
+        super().__init__()
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2)
+                             * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(1)]
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, input_dim: int, embedding_dim: int = 128, num_heads: int = 8, num_layers: int = 6, dropout_p: int = 0.1, max_len: int = 64):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.max_len = max_len
+        
+        self.pos_encoding = PositionalEncoding(embedding_dim, max_len=max_len)
+        self.input_projection = nn.Linear(input_dim, embedding_dim)
+        self.dropout = nn.Dropout(dropout_p)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embedding_dim, 
+            nhead=num_heads, 
+            dim_feedforward=4*embedding_dim,
+            dropout=dropout_p,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=num_layers
+        )
+
+    def forward(self, x, seq_lengths):
+        batch_size = x.size(0)
+        x = self.input_projection(x)
+        x = self.pos_encoding(x)
+        x = self.dropout(x)
+
+        padding_mask = torch.zeros(batch_size, self.max_len, dtype=torch.bool, device=x.device)
+        for i, length in enumerate(seq_lengths):
+            padding_mask[i, :length] = True
+
+        attn_mask = ~padding_mask
+
+        encoder_output = self.transformer_encoder(x, src_key_padding_mask=attn_mask)
+        return encoder_output
+    
+
 class ActorCritic(nn.Module):
     def __init__(self, basis_dim: int, action_history_size: int, action_dim: int, dropout_p: float = 0.1) -> None:
         super().__init__()
@@ -23,16 +83,13 @@ class ActorCritic(nn.Module):
         self.action_embedding_dim = 8
         self.action_embedding_hidden_dim = 64
 
-        self.gs_norms_encoder = nn.Sequential(
-            nn.Linear(basis_dim, self.gs_norms_features_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.gs_norms_features_hidden_dim,
-                      self.gs_norms_features_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.gs_norms_features_hidden_dim,
-                      self.gs_norms_features_hidden_dim)
+        self.gs_norms_encoder = TransformerEncoder(
+            input_dim=1,
+            embedding_dim=self.gs_norms_features_hidden_dim,
+            num_heads=4,
+            num_layers=3,
+            dropout_p=dropout_p,
+            max_len=basis_dim
         )
 
         # Action history processor
@@ -78,7 +135,11 @@ class ActorCritic(nn.Module):
 
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
 
-        gs_norms_features = self.gs_norms_encoder(gs_norms)
+        batch_size = gs_norms.size(0)
+        seq_length = gs_norms.size(1)
+        gs_norms_reshaped = gs_norms.unsqueeze(-1)
+        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, torch.full((batch_size,), seq_length, device=gs_norms.device))
+        gs_norms_features = gs_norms_features.mean(dim=1)
 
         # Process action history
         action_history = tensordict["action_history"].to(torch.long)
