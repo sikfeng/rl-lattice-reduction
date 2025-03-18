@@ -57,7 +57,7 @@ class ActorCritic(nn.Module):
             nn.Linear(512, 512),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, action_dim),
+            nn.Linear(512, action_dim + 1),
             nn.Softmax(dim=-1)
         )
 
@@ -168,7 +168,7 @@ class PPOAgent(nn.Module):
         self.replay_buffer.add(td)
 
     def _mask_logits(self, logits, action_history):
-        mask = torch.ones((logits.size(0), self.action_dim, ),
+        mask = torch.ones((logits.size(0), self.action_dim + 1, ),
                           dtype=torch.bool, device=action_history.device)
         for i, action in enumerate(action_history[:, -1]):
             mask[i, :int(action.item())] = False

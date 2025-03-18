@@ -333,7 +333,7 @@ class BKZReduction(object):
 class ReductionEnvConfig:
     # If not provided, will be set to 2 * basis_dim
     max_steps: Optional[int] = None
-    min_block_size: int = None  # inclusive
+    min_block_size: int = 2  # inclusive
     max_block_size: int = None  # inclusive
     time_limit: float = 1.0
     basis_dim: int = None
@@ -395,14 +395,14 @@ class ReductionEnvironment:
         self.bkz = BKZReduction(self.basis)
         with self.tracer.context("lll"):
             self.bkz.lll_obj()
-        self.auto_abort = BKZ.AutoAbort(self.bkz.M, self.basis.nrows)
 
         # TODO: min_block_size may not be 2!
         self.action_history = [0]  # initial basis is always LLL reduced
-        self.log_defect_history = [compute_log_defect(self.basis)]
-        self.shortest_length_history = [
-            options["shortest_original_basis_vector_length"]]
-        self.time_history = [process_time()]
+        self.log_defect_history = []
+        self.shortest_length_history = []
+        self.time_history = []
+        self._update_history()
+
         self.current_step = 0
 
         return self._get_observation(), self._get_info()
@@ -414,18 +414,22 @@ class ReductionEnvironment:
         return action + self.config.min_block_size
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        block_size = self._action_to_block(action)
-        self.clean = self.bkz.tour(BKZ.EasyParam(
-            block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
+        if action == self.config.actions_n:
+            self.terminated = True
 
-        self.action_history.append(action)
-        self._update_history()
+            return self._get_observation(), 0, self.terminated, self.truncated, self._get_info()
+        else:
+            block_size = self._action_to_block(action)
+            self.clean = self.bkz.tour(BKZ.EasyParam(
+                block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
 
-        self.terminated = self._check_termination()
-        self.truncated = self._check_truncation()
-        self.current_step += 1
+            self.action_history.append(action)
+            self._update_history()
 
-        return self._get_observation(), self._compute_reward(), self._check_termination(), self._check_truncation(), self._get_info()
+            self.truncated = self._check_truncation()
+            self.current_step += 1
+
+            return self._get_observation(), self._compute_reward(), self.terminated, self.truncated, self._get_info()
 
     def _update_history(self):
         self.time_history.append(process_time())
@@ -443,10 +447,10 @@ class ReductionEnvironment:
         rewards["time_penalty"] = self.config.time_penalty_weight * \
             (self.time_history[-1] - self.time_history[-2])
         rewards["defect_reward"] = self.config.defect_reward_weight * \
-            (self.log_defect_history[-1] - self.log_defect_history[-2])
+            (self.log_defect_history[-2] - self.log_defect_history[-1])
         rewards["length_reward"] = self.config.length_reward_weight * \
-            (self.shortest_length_history[-1] -
-             self.shortest_length_history[-2])
+            (self.shortest_length_history[-2] -
+             self.shortest_length_history[-1])
 
         # Clip final reward to prevent extreme values
         total_reward = sum(rewards.values())
@@ -454,9 +458,6 @@ class ReductionEnvironment:
 
     def _check_termination(self):
         """Check if episode has terminated"""
-
-        if self.auto_abort.test_abort():
-            return True
 
         return False
 
