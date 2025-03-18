@@ -26,7 +26,6 @@ def main():
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str,
                         choices=distributions)
-    parser.add_argument("--min-block-size", type=int, default=2)
     parser.add_argument("--max-block-size", type=int)
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
@@ -39,13 +38,10 @@ def main():
         args.max_block_size = args.dim
 
     # Validation
-    if args.min_block_size < 2:
-        raise ValueError("min_block_size must be at least 2.")
     if args.max_block_size > args.dim:
         raise ValueError("max_block_size must be at most dim.")
-    if args.min_block_size > args.max_block_size:
-        raise ValueError(
-            "min_block_size cannot be greater than max_block_size.")
+    if 2 > args.max_block_size:
+        raise ValueError("max_block_size cannot be less than 2.")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -97,7 +93,6 @@ def main():
     # Environment and agent configuration
     env_config = ReductionEnvConfig(
         basis_dim=args.dim,
-        min_block_size=args.min_block_size,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
