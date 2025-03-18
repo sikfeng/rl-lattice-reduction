@@ -333,7 +333,7 @@ class PPOAgent(nn.Module):
                     steps += 1
                     state = next_state
 
-                total_reward += episode_reward.item()
+                total_reward += episode_reward
                 total_steps += steps
 
                 # Check success
