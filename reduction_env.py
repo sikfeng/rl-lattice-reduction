@@ -416,6 +416,7 @@ class ReductionEnvironment:
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         if action == self.config.actions_n:
             self.terminated = True
+            self.truncated = self._check_truncation()
 
             return self._get_observation(), 0, self.terminated, self.truncated, self._get_info()
         else:
@@ -426,6 +427,7 @@ class ReductionEnvironment:
             self.action_history.append(action)
             self._update_history()
 
+            self.terminated = self._check_termination()
             self.truncated = self._check_truncation()
             self.current_step += 1
 
