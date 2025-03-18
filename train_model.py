@@ -47,8 +47,6 @@ def main():
         raise ValueError(
             "min_block_size cannot be greater than max_block_size.")
 
-    print(args)
-
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -68,6 +66,8 @@ def main():
             logging.StreamHandler()
         ]
     )
+
+    logging.info(args)
 
     logging.info(f"Saving run to checkpoint directory: {checkpoint_dir}")
     logging.info(f"Logging to: {checkpoint_dir / 'training.log'}")
