@@ -40,19 +40,19 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.max_len = max_len
-        
+
         self.pos_encoding = PositionalEncoding(embedding_dim, max_len=max_len)
         self.input_projection = nn.Linear(input_dim, embedding_dim)
         self.dropout = nn.Dropout(dropout_p)
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, 
-            nhead=num_heads, 
+            d_model=embedding_dim,
+            nhead=num_heads,
             dim_feedforward=4*embedding_dim,
             dropout=dropout_p,
             batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, 
+            encoder_layer,
             num_layers=num_layers
         )
 
@@ -62,15 +62,17 @@ class TransformerEncoder(nn.Module):
         x = self.pos_encoding(x)
         x = self.dropout(x)
 
-        padding_mask = torch.zeros(batch_size, self.max_len, dtype=torch.bool, device=x.device)
+        padding_mask = torch.zeros(
+            batch_size, self.max_len, dtype=torch.bool, device=x.device)
         for i, length in enumerate(seq_lengths):
             padding_mask[i, :length] = True
 
         attn_mask = ~padding_mask
 
-        encoder_output = self.transformer_encoder(x, src_key_padding_mask=attn_mask)
+        encoder_output = self.transformer_encoder(
+            x, src_key_padding_mask=attn_mask)
         return encoder_output
-    
+
 
 class ActorCritic(nn.Module):
     def __init__(self, basis_dim: int, action_history_size: int, action_dim: int, dropout_p: float = 0.1) -> None:
@@ -79,9 +81,9 @@ class ActorCritic(nn.Module):
         self.action_history_size = action_history_size
         self.basis_dim = basis_dim
 
-        self.gs_norms_features_hidden_dim = 128
+        self.gs_norms_features_hidden_dim = 32
         self.action_embedding_dim = 8
-        self.action_embedding_hidden_dim = 64
+        self.action_embedding_hidden_dim = 32
 
         self.gs_norms_encoder = TransformerEncoder(
             input_dim=1,
@@ -138,7 +140,8 @@ class ActorCritic(nn.Module):
         batch_size = gs_norms.size(0)
         seq_length = gs_norms.size(1)
         gs_norms_reshaped = gs_norms.unsqueeze(-1)
-        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, torch.full((batch_size,), seq_length, device=gs_norms.device))
+        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, torch.full(
+            (batch_size,), seq_length, device=gs_norms.device))
         gs_norms_features = gs_norms_features.mean(dim=1)
 
         # Process action history
