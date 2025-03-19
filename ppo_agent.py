@@ -75,10 +75,9 @@ class TransformerEncoder(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, basis_dim: int, action_history_size: int, action_dim: int, dropout_p: float = 0.1) -> None:
+    def __init__(self, basis_dim: int, action_dim: int, dropout_p: float = 0.1) -> None:
         super().__init__()
         self.action_dim = action_dim
-        self.action_history_size = action_history_size
         self.basis_dim = basis_dim
 
         self.gs_norms_features_hidden_dim = 32
@@ -94,42 +93,27 @@ class ActorCritic(nn.Module):
             max_len=basis_dim
         )
 
-        # Action history processor
-        self.action_processor = nn.Sequential(
-            nn.Embedding(action_dim + 1,
-                         self.action_embedding_dim, action_dim),
-            nn.Flatten(-2, -1),
-            nn.Linear(action_history_size * self.action_embedding_dim,
-                      self.action_embedding_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.action_embedding_hidden_dim,
-                      self.action_embedding_hidden_dim)
-        )
+        self.combined_feature_dim = self.gs_norms_features_hidden_dim + 1
+        self.actor_hidden_dim = 512
 
-        # Actor head
         self.actor = nn.Sequential(
-            nn.Linear(self.gs_norms_features_hidden_dim +
-                      self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, 512),
+            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, action_dim + 1),
+            nn.Linear(self.actor_hidden_dim, action_dim + 1),
             nn.Softmax(dim=-1)
         )
-
-        # Critic head
         self.critic = nn.Sequential(
-            nn.Linear(self.gs_norms_features_hidden_dim +
-                      self.action_embedding_hidden_dim, 512),
+            nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, 512),
+            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(512, 1)
+            nn.Linear(self.actor_hidden_dim, 1),
         )
 
     def forward(self, tensordict: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -144,10 +128,7 @@ class ActorCritic(nn.Module):
             (batch_size,), seq_length, device=gs_norms.device))
         gs_norms_features = gs_norms_features.mean(dim=1)
 
-        # Process action history
-        action_history = tensordict["action_history"].to(torch.long)
-        action_history[(action_history == -1)] = self.action_dim
-        action_embedding = self.action_processor(action_history)
+        action_embedding = tensordict["last_action"]
 
         # Combine all features
         combined = torch.cat([
@@ -165,11 +146,12 @@ class ActorCritic(nn.Module):
         # Q has orthonormal rows, hence diagonal elements of R are the GS norms
         _, R = torch.linalg.qr(basis)
         gs_norms = torch.diagonal(R, dim1=-2, dim2=-1)
+        last_action_norm = tensordict["last_action"] / gs_norms.size(-1)
 
         # Create and return TensorDict with all features
         return TensorDict({
             "gs_norms": gs_norms,
-            "action_history": tensordict["action_history"]
+            "last_action": last_action_norm
         }, batch_size=[])
 
 
@@ -193,7 +175,6 @@ class PPOAgent(nn.Module):
 
         self.actor_critic = ActorCritic(
             self.ppo_config.env_config.basis_dim,
-            self.ppo_config.env_config.action_history_size,
             self.action_dim,
             ppo_config.dropout_p
         )
@@ -218,7 +199,7 @@ class PPOAgent(nn.Module):
         td = TensorDict({
             "state": {
                 "basis": state["basis"],
-                "action_history": state["action_history"]
+                "last_action": state["last_action"]
             },
             "action": action,
             "log_prob": log_prob,
@@ -226,7 +207,7 @@ class PPOAgent(nn.Module):
             "done": done,
             "next_state": {
                 "basis": next_state["basis"],
-                "action_history": next_state["action_history"]
+                "last_action": next_state["last_action"]
             }
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
@@ -243,7 +224,7 @@ class PPOAgent(nn.Module):
         with torch.no_grad():
             logits, value = self.actor_critic(state)
 
-        masked_logits = self._mask_logits(logits, state["action_history"])
+        masked_logits = self._mask_logits(logits, state["last_action"])
 
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()

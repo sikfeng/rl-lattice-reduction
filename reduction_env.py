@@ -337,7 +337,6 @@ class ReductionEnvConfig:
     max_block_size: int = None  # inclusive
     time_limit: float = 1.0
     basis_dim: int = None
-    action_history_size: int = 10
     batch_size: int = 1
 
     time_penalty_weight: float = -1.0
@@ -360,21 +359,19 @@ class ReductionEnvironment:
         basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
         basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
-        last_actions = torch.tensor(
-            self.action_history[-self.config.action_history_size:], dtype=torch.float32)
-        history = torch.cat([torch.full(
-            (self.config.action_history_size - last_actions.size(0),), -1.0), last_actions])
+        last_action = torch.tensor([self.action_history[-1]], dtype=torch.float32)
 
         return {
             "basis": basis,
-            "action_history": history
+            "last_action": last_action
         }
 
     def _get_info(self) -> Dict[str, Any]:
         return {
             "log_defect": self.log_defect_history[-1],
             "shortest_length": self.shortest_length_history[-1],
-            "time": self.time_history[-1]
+            "time": self.time_history[-1],
+            "action_history": self.action_history
         }
 
     def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
