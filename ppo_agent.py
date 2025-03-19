@@ -394,8 +394,8 @@ class PPOAgent(nn.Module):
                 shortness += final_shortest_length
                 success_count += final_shortest_length < 1.05
                 time_taken += time_history[-1] - time_history[0]
-                length_improvement += shortest_length_history[-1] - \
-                    shortest_length_history[0]
+                length_improvement += shortest_length_history[-0] - \
+                    shortest_length_history[-1]
 
             return {
                 "avg_reward": total_reward / num_samples,
