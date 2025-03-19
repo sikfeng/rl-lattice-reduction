@@ -212,13 +212,12 @@ class PPOAgent(nn.Module):
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
-    def _mask_logits(self, logits, action_history):
-        mask = torch.ones((logits.size(0), self.action_dim + 1, ),
-                          dtype=torch.bool, device=action_history.device)
-        for i, action in enumerate(action_history[:, -1]):
-            mask[i, :int(action.item())] = False
-        logits = logits.masked_fill(~mask, float('-inf'))
-        return logits
+    def _mask_logits(self, logits, last_action):
+        indices = torch.arange(self.action_dim + 1,
+                               device=logits.device).unsqueeze(0)
+        thresholds = last_action.unsqueeze(1)
+        mask = indices >= thresholds
+        return logits.masked_fill(~mask, float('-inf'))
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
