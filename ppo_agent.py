@@ -82,7 +82,6 @@ class ActorCritic(nn.Module):
 
         self.gs_norms_features_hidden_dim = 32
         self.action_embedding_dim = 8
-        self.action_embedding_hidden_dim = 32
 
         self.gs_norms_encoder = TransformerEncoder(
             input_dim=1,
@@ -93,7 +92,9 @@ class ActorCritic(nn.Module):
             max_len=basis_dim
         )
 
-        self.combined_feature_dim = self.gs_norms_features_hidden_dim + 1
+        self.action_embedding = nn.Embedding(action_dim + 1, self.action_embedding_dim)
+
+        self.combined_feature_dim = self.gs_norms_features_hidden_dim + self.action_embedding_dim
         self.actor_hidden_dim = 128
 
         self.actor = nn.Sequential(
@@ -128,8 +129,7 @@ class ActorCritic(nn.Module):
             (batch_size,), seq_length, device=gs_norms.device))
         gs_norms_features = gs_norms_features.mean(dim=1)
 
-        action_embedding = tensordict["last_action"]
-
+        action_embedding = self.action_embedding(tensordict["last_action"].long()).squeeze(1)
         # Combine all features
         combined = torch.cat([
             gs_norms_features,
@@ -146,22 +146,25 @@ class ActorCritic(nn.Module):
         # Q has orthonormal rows, hence diagonal elements of R are the GS norms
         _, R = torch.linalg.qr(basis)
         gs_norms = torch.diagonal(R, dim1=-2, dim2=-1)
-        last_action_norm = tensordict["last_action"] / gs_norms.size(-1)
 
         # Create and return TensorDict with all features
         return TensorDict({
             "gs_norms": gs_norms,
-            "last_action": last_action_norm
+            "last_action": tensordict["last_action"]
         }, batch_size=[])
 
 
 class PPOConfig:
-    def __init__(self, env_config: ReductionEnvConfig = None, lr=3e-4, gamma=0.99, gae_lambda=0.95,
-                 clip_epsilon=0.2, epochs=4, dropout_p=0.2):
+    def __init__(self, env_config: ReductionEnvConfig = None,
+                 lr: float = 3e-4, gamma: float = 0.99,
+                 gae_lambda: float = 0.95, clip_epsilon: float = 0.2,
+                 clip_grad_norm: float = 0.5, epochs: int = 4,
+                 dropout_p: float = 0.2):
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.clip_epsilon = clip_epsilon
+        self.clip_grad_norm = clip_grad_norm
         self.epochs = epochs
         self.dropout_p = dropout_p
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
@@ -303,7 +306,8 @@ class PPOAgent(nn.Module):
             self.optimizer.zero_grad()
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), 1e3)
+            torch.nn.utils.clip_grad_norm_(
+                self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
             self.optimizer.step()
 
         avg_reward = rewards.mean().item()
