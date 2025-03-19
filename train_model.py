@@ -115,8 +115,8 @@ def main():
             # Evaluation
             if (step + 1) % args.eval_interval == 0:
                 val_metrics = agent.evaluate(val_loader, device)
-                logging.info(
-                    f"Epoch {epoch}, Step {step}, Val Success: {val_metrics['success_rate']:.2f}, Avg Shortness: {val_metrics['avg_shortness']}, Avg Time: {val_metrics['avg_time']}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+                logging.info(f"Epoch {epoch}, Step {step}")
+                logging.info(str(val_metrics))
 
                 filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
@@ -124,8 +124,8 @@ def main():
                 agent.train()
 
     test_metrics = agent.evaluate(test_loader, device)
-    logging.info(
-        f"Test Success: {test_metrics['success_rate']:.2f}, Avg Shortness: {test_metrics['avg_shortness']}, Avg Time: {test_metrics['avg_time']}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
+    logging.info(f"Test:")
+    logging.info(str(test_metrics))
 
 
 if __name__ == "__main__":

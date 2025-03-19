@@ -92,9 +92,11 @@ class ActorCritic(nn.Module):
             max_len=basis_dim
         )
 
-        self.action_embedding = nn.Embedding(action_dim + 1, self.action_embedding_dim)
+        self.action_embedding = nn.Embedding(
+            action_dim + 1, self.action_embedding_dim)
 
-        self.combined_feature_dim = self.gs_norms_features_hidden_dim + self.action_embedding_dim
+        self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
+            self.action_embedding_dim
         self.actor_hidden_dim = 128
 
         self.actor = nn.Sequential(
@@ -129,7 +131,8 @@ class ActorCritic(nn.Module):
             (batch_size,), seq_length, device=gs_norms.device))
         gs_norms_features = gs_norms_features.mean(dim=1)
 
-        action_embedding = self.action_embedding(tensordict["last_action"].long()).squeeze(1)
+        action_embedding = self.action_embedding(
+            tensordict["last_action"].long()).squeeze(1)
         # Combine all features
         combined = torch.cat([
             gs_norms_features,
@@ -354,6 +357,7 @@ class PPOAgent(nn.Module):
             total_steps = 0
             success_count = 0
             shortness = 0.0
+            length_improvement = 0.0
             time_taken = 0.0
             num_samples = len(dataloader.dataset)
 
@@ -387,17 +391,17 @@ class PPOAgent(nn.Module):
                 # Check success
                 final_shortest_length = shortest_length_history[-1]
 
-                shortness += (final_shortest_length /
-                              batch["gaussian_heuristic"]).item()
-                successes = final_shortest_length < 1.05 * \
-                    batch["gaussian_heuristic"]
-                success_count += torch.count_nonzero(successes)
+                shortness += final_shortest_length
+                success_count += final_shortest_length < 1.05
                 time_taken += time_history[-1] - time_history[0]
+                length_improvement += shortest_length_history[-1] - \
+                    shortest_length_history[0]
 
             return {
                 "avg_reward": total_reward / num_samples,
                 "avg_steps": total_steps / num_samples,
                 "success_rate": success_count / num_samples,
                 "avg_shortness": shortness / num_samples,
+                "avg_length_improvement": length_improvement / num_samples,
                 "avg_time": time_taken / num_samples
             }

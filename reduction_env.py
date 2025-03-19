@@ -1,27 +1,16 @@
 from dataclasses import dataclass
-import multiprocessing as mp
+import math
 from time import process_time
 from typing import Any, Dict, Optional, Tuple
 
+import fpylll
 from fpylll import BKZ, Enumeration, EnumerationError, FPLLL, GSO, IntegerMatrix, LLL
-from fpylll.util import adjust_radius_to_gh_bound
 from fpylll.tools.bkz_stats import dummy_tracer, normalize_tracer, Tracer
+from fpylll.util import adjust_radius_to_gh_bound
 import numpy as np
-from tensordict import TensorDict
 import torch
 
-
 FPLLL.set_precision(1000)
-
-
-def compute_log_defect(basis: IntegerMatrix) -> float:
-    """Compute the orthogonality defect of a given basis."""
-    m = GSO.Mat(basis, flags=GSO.INT_GRAM | GSO.ROW_EXPO, float_type="mpfr")
-    m.update_gso()
-    log_det = m.get_log_det(0, basis.nrows) / 2  # log(determinant)
-    log_prod_norms = sum(np.log(v.norm()) for v in basis)
-    log_defect = log_prod_norms - log_det
-    return log_defect
 
 
 # adapted from https://github.com/fplll/fpylll/blob/master/src/fpylll/algorithms/bkz.py
@@ -359,7 +348,8 @@ class ReductionEnvironment:
         basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
         basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
-        last_action = torch.tensor([self.action_history[-1]], dtype=torch.float32)
+        last_action = torch.tensor(
+            [self.action_history[-1]], dtype=torch.float32)
 
         return {
             "basis": basis,
@@ -378,7 +368,7 @@ class ReductionEnvironment:
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
         self.lll_log_defect = options["lll_log_defect"]
         self.shortest_lll_basis_vector_length = options["shortest_lll_basis_vector_length"]
-        # self.shortest_vector_length = options["shortest_vector_length"]
+        self.gh = self.gaussian_heuristic(self.basis)
 
         self.tracer = normalize_tracer(True)
         if not isinstance(self.tracer, Tracer):
@@ -432,8 +422,9 @@ class ReductionEnvironment:
 
     def _update_history(self):
         self.time_history.append(process_time())
-        self.log_defect_history.append(compute_log_defect(self.basis))
-        self.shortest_length_history.append(min(v.norm() for v in self.basis))
+        self.log_defect_history.append(self.compute_log_defect(self.basis))
+        self.shortest_length_history.append(
+            min(v.norm() for v in self.basis) / self.gh)
 
     def _compute_reward(self) -> float:
         # Initialize reward components dictionary for better tracking
@@ -470,99 +461,26 @@ class ReductionEnvironment:
 
         return False
 
+    @staticmethod
+    def gaussian_heuristic(basis: IntegerMatrix) -> float:
+        M = GSO.Mat(basis)
+        M.update_gso()
 
-def _worker(work_remote, remote, config):
-    """Worker function to run environment in subprocess."""
-    remote.close()
-    env = ReductionEnvironment(config)
-    try:
-        while True:
-            cmd, data = work_remote.recv()
-            if cmd == 'reset':
-                obs, info = env.reset(data)
-                work_remote.send((obs, info))
-            elif cmd == 'step':
-                obs, reward, terminated, truncated, info = env.step(data)
-                work_remote.send((obs, reward, terminated, truncated, info))
-            elif cmd == 'close':
-                work_remote.close()
-                break
-            else:
-                raise NotImplementedError(f"Command {cmd} not recognized")
-    except (EOFError, KeyboardInterrupt):
-        return
+        # Get the squared norms of the Gram-Schmidt vectors
+        gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
 
+        # Calculate the Gaussian Heuristic
+        gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
 
-class VectorizedReductionEnvironment:
-    def __init__(self, config: ReductionEnvConfig):
-        self.config = config
-        self.batch_size = config.batch_size
+        return math.sqrt(gh_squared)
 
-        start_method = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
-        ctx = mp.get_context(start_method)
-
-        self.remotes, self.work_remotes = zip(
-            *[ctx.Pipe() for _ in range(self.batch_size)])
-        self.processes = []
-        for work_remote, remote in zip(self.work_remotes, self.remotes):
-            args = (work_remote, remote, config)
-            process = ctx.Process(target=_worker, args=args, daemon=True)
-            process.start()
-            self.processes.append(process)
-            work_remote.close()
-
-        self.closed = False
-
-    def reset(self, options: TensorDict) -> Tuple[TensorDict, TensorDict]:
-        options_list = options.unbind(dim=0)
-        for remote, action in zip(self.remotes, options_list):
-            remote.send(('reset', action))
-        results = [remote.recv() for remote in self.remotes]
-        states, infos = zip(*results)
-
-        states_ = {key: torch.stack([state[key]
-                                    for state in states]) for key in states[0]}
-        infos_ = {}
-        for key in infos[0]:
-            if isinstance(infos[0][key], torch.Tensor):
-                infos_[key] = torch.stack([info[key] for info in infos])
-            else:
-                infos_[key] = torch.Tensor([info[key] for info in infos])
-
-        return TensorDict(states_), TensorDict(infos_)
-
-    def step(self, actions: torch.Tensor):
-        actions_list = actions.cpu().tolist()
-        for remote, action in zip(self.remotes, actions_list):
-            remote.send(('step', action))
-        results = [remote.recv() for remote in self.remotes]
-        next_states, rewards, terminateds, truncateds, infos = zip(*results)
-
-        next_states_ = TensorDict({key: torch.stack(
-            [state[key] for state in next_states]) for key in next_states[0]})
-        rewards_ = torch.tensor(rewards, dtype=torch.float32)
-        terminateds_ = torch.tensor(terminateds, dtype=torch.bool)
-        truncateds_ = torch.tensor(truncateds, dtype=torch.bool)
-        infos_ = {}
-        for key in infos[0]:
-            if isinstance(infos[0][key], torch.Tensor):
-                infos_[key] = torch.stack([info[key] for info in infos])
-            else:
-                infos_[key] = torch.Tensor([info[key] for info in infos])
-
-        return next_states_, rewards_, terminateds_, truncateds_, infos_
-
-    def close(self):
-        """Clean up resources."""
-        if self.closed:
-            return
-        self.closed = True
-        for remote in self.remotes:
-            try:
-                remote.send(('close', None))
-            except BrokenPipeError:
-                pass
-        for process in self.processes:
-            process.join()
-        for remote in self.remotes:
-            remote.close()
+    @staticmethod
+    def compute_log_defect(basis: IntegerMatrix) -> float:
+        """Compute the orthogonality defect of a given basis."""
+        m = GSO.Mat(basis, flags=GSO.INT_GRAM |
+                    GSO.ROW_EXPO, float_type="mpfr")
+        m.update_gso()
+        log_det = m.get_log_det(0, basis.nrows) / 2  # log(determinant)
+        log_prod_norms = sum(np.log(v.norm()) for v in basis)
+        log_defect = log_prod_norms - log_det
+        return log_defect
