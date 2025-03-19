@@ -388,11 +388,8 @@ class PPOAgent(nn.Module):
                 total_reward += episode_reward
                 total_steps += steps
 
-                # Check success
-                final_shortest_length = shortest_length_history[-1]
-
-                shortness += final_shortest_length
-                success_count += final_shortest_length < 1.05
+                shortness += min(shortest_length_history)
+                success_count += min(shortest_length_history) < 1.05
                 time_taken += time_history[-1] - time_history[0]
                 length_improvement += shortest_length_history[-0] - \
                     shortest_length_history[-1]
