@@ -94,7 +94,7 @@ class ActorCritic(nn.Module):
         )
 
         self.combined_feature_dim = self.gs_norms_features_hidden_dim + 1
-        self.actor_hidden_dim = 512
+        self.actor_hidden_dim = 128
 
         self.actor = nn.Sequential(
             nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
