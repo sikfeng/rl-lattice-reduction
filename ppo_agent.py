@@ -80,7 +80,7 @@ class ActorCritic(nn.Module):
         self.action_dim = action_dim
         self.basis_dim = basis_dim
 
-        self.gs_norms_features_hidden_dim = 32
+        self.gs_norms_features_hidden_dim = 128
         self.action_embedding_dim = 8
 
         self.gs_norms_encoder = TransformerEncoder(
