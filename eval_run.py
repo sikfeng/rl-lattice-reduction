@@ -8,6 +8,7 @@ from fpylll import FPLLL
 import numpy as np
 import torch
 
+from eval_chkpt import eval_model
 from ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
@@ -20,7 +21,8 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--run-dir", type=str, required=True)
     parser.add_argument("--dim", type=int, default=32)
-    parser.add_argument("--dist", type=str, required=True, choices=["uniform", "qary", "ntrulike"])
+    parser.add_argument("--dist", type=str, required=True,
+                        choices=["uniform", "qary", "ntrulike"])
     parser.add_argument("--max_block_size", type=int)
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
@@ -56,8 +58,10 @@ def main():
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        logging.info(f'There are {torch.cuda.device_count()} GPU(s) available.')
-        logging.info('We will use the GPU: ' + str(torch.cuda.get_device_name(0)))
+        logging.info(
+            f'There are {torch.cuda.device_count()} GPU(s) available.')
+        logging.info('We will use the GPU: ' +
+                     str(torch.cuda.get_device_name(0)))
     else:
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
@@ -100,23 +104,17 @@ def main():
         total_params = sum(p.numel() for p in agent.parameters())
         logging.info(f"Total parameters: {total_params}")
 
-        val_metrics = agent.evaluate(val_loader, device)
+        metrics = eval_model(agent, val_loader, test_loader, device)
         logging.info(f"Validation metrics:")
-        logging.info(str(val_metrics))
-
-        test_metrics = agent.evaluate(test_loader, device)
+        logging.info(str(metrics["val"]))
         logging.info(f"Test metrics:")
-        logging.info(str(test_metrics))
-
-        metrics = {
-            "val": val_metrics,
-            "test": test_metrics
-        }
+        logging.info(str(metrics["test"]))
 
         with open(yaml_file, "w") as f:
             yaml.safe_dump(metrics, f, sort_keys=False)
 
         logging.info(f"Saved metrics to {yaml_file}")
+
 
 if __name__ == "__main__":
     main()

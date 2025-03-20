@@ -2,6 +2,7 @@ import argparse
 import logging
 from pathlib import Path
 import random
+import yaml
 
 from fpylll import FPLLL
 import numpy as np
@@ -12,15 +13,36 @@ from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
 
 
+def eval_model(agent, val_loader, test_loader, device):
+    val_metrics = agent.evaluate(val_loader, device)
+    logging.info(f"Validation metrics:")
+    logging.info(str(val_metrics))
+
+    test_metrics = agent.evaluate(test_loader, device)
+    logging.info(f"Test metrics:")
+    logging.info(str(test_metrics))
+
+    metrics = {
+        "val": val_metrics,
+        "test": test_metrics
+    }
+
+    return metrics
+
+
 def main():
     FPLLL.set_precision(1000)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--chkpt", "--checkpoint", type=str)
-    parser.add_argument("-d", "--dim", type=int, default=32)
-    parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform", "qary", "ntrulike"])
+    parser.add_argument("--dim", type=int, default=32)
+    parser.add_argument("--distribution", type=str,
+                        default="uniform", choices=["uniform", "qary", "ntrulike"])
     parser.add_argument("--max_block_size", type=int)
+    parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
+    parser.add_argument("--defect-reward-weight", type=float, default=0.1)
+    parser.add_argument("--length-reward-weight", type=float, default=1.0)
     parser.add_argument("--time-limit", type=float, default=300.0)
     args = parser.parse_args()
 
@@ -52,8 +74,10 @@ def main():
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        logging.info(f'There are {torch.cuda.device_count()} GPU(s) available.')
-        logging.info('We will use the GPU: ' + str(torch.cuda.get_device_name(0)))
+        logging.info(
+            f'There are {torch.cuda.device_count()} GPU(s) available.')
+        logging.info('We will use the GPU: ' +
+                     str(torch.cuda.get_device_name(0)))
     else:
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
@@ -74,7 +98,9 @@ def main():
     env_config = ReductionEnvConfig(
         basis_dim=args.dim,
         max_block_size=args.max_block_size,
-        batch_size=1,
+        time_penalty_weight=args.time_penalty_weight,
+        defect_reward_weight=args.defect_reward_weight,
+        length_reward_weight=args.length_reward_weight,
         time_limit=args.time_limit
     )
 
@@ -86,13 +112,19 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    val_metrics = agent.evaluate(val_loader, device)
-    logging.info(f"Validation:")
-    logging.info(str(val_metrics))
+    metrics = eval_model(agent, val_loader, test_loader, device)
+    logging.info(f"Validation metrics:")
+    logging.info(str(metrics["val"]))
+    logging.info(f"Test metrics:")
+    logging.info(str(metrics["test"]))
 
-    test_metrics = agent.evaluate(test_loader, device)
-    logging.info(f"Test:")
-    logging.info(str(test_metrics))
+    if args.chkpt is not None:
+        yaml_file = Path(args.chkpt).with_suffix("yml")
+        with open(yaml_file, "w") as f:
+            yaml.safe_dump(metrics, f, sort_keys=False)
+
+        logging.info(f"Saved metrics to {yaml_file}")
+
 
 if __name__ == "__main__":
     main()
