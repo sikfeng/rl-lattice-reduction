@@ -148,7 +148,7 @@ class ActorCritic(nn.Module):
 
         # Q has orthonormal rows, hence diagonal elements of R are the GS norms
         _, R = torch.linalg.qr(basis)
-        gs_norms = torch.diagonal(R, dim1=-2, dim2=-1)
+        gs_norms = torch.abs(torch.diagonal(R, dim1=-2, dim2=-1))
 
         # Create and return TensorDict with all features
         return TensorDict({
