@@ -367,7 +367,6 @@ class ReductionEnvironment:
     def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
         self.lll_log_defect = options["lll_log_defect"]
-        self.shortest_lll_basis_vector_length = options["shortest_lll_basis_vector_length"]
         self.gh = self.gaussian_heuristic(self.basis)
 
         self.tracer = normalize_tracer(True)
