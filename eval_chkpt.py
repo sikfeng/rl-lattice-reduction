@@ -18,9 +18,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--chkpt", "--checkpoint", type=str)
-    parser.add_argument("-d", "--dim", type=int, default=4)
+    parser.add_argument("-d", "--dim", type=int, default=32)
     parser.add_argument("--distribution", type=str, default="uniform", choices=["uniform", "qary", "ntrulike"])
-    parser.add_argument("--min_block_size", type=int, default=2)
     parser.add_argument("--max_block_size", type=int)
     parser.add_argument("--time-limit", type=float, default=300.0)
     args = parser.parse_args()
@@ -30,12 +29,10 @@ def main():
         args.max_block_size = args.dim
 
     # Validation
-    if args.min_block_size < 2:
-        raise ValueError("min_block_size must be at least 2.")
     if args.max_block_size > args.dim:
         raise ValueError("max_block_size must be at most dim.")
-    if args.min_block_size > args.max_block_size:
-        raise ValueError("min_block_size cannot be greater than max_block_size.")
+    if 2 > args.max_block_size:
+        raise ValueError("max_block_size cannot be less than 2.")
 
     print(args)
 
@@ -76,24 +73,26 @@ def main():
     # Environment and agent configuration
     env_config = ReductionEnvConfig(
         basis_dim=args.dim,
-        min_block_size=args.min_block_size,
         max_block_size=args.max_block_size,
         batch_size=1,
         time_limit=args.time_limit
     )
 
     ppo_config = PPOConfig(env_config=env_config)
-    best_agent = PPOAgent(ppo_config=ppo_config).to(device)
+    agent = PPOAgent(ppo_config=ppo_config).to(device)
+    if args.chkpt is not None:
+        agent.load_state_dict(torch.load(args.chkpt))
 
-    best_agent.load_state_dict(torch.load(args.chkpt))
-    total_params = sum(p.numel() for p in best_agent.parameters())
+    total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    val_metrics = best_agent.evaluate(val_loader, device)
-    logging.info(f"Val Success: {val_metrics['success_rate']:.2f}, Avg Reward: {val_metrics['avg_reward']}, Avg Steps: {val_metrics['avg_steps']}")
+    val_metrics = agent.evaluate(val_loader, device)
+    logging.info(f"Validation:")
+    logging.info(str(val_metrics))
 
-    test_metrics = best_agent.evaluate(test_loader, device)
-    logging.info(f"Test Success: {test_metrics['success_rate']:.2f}, Avg Reward: {test_metrics['avg_reward']}, Avg Steps: {test_metrics['avg_steps']}")
+    test_metrics = agent.evaluate(test_loader, device)
+    logging.info(f"Test:")
+    logging.info(str(test_metrics))
 
 if __name__ == "__main__":
     main()
