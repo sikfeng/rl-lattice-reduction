@@ -115,7 +115,6 @@ def main():
         for step, batch in enumerate(tqdm(train_loader, dynamic_ncols=True)):
             agent.train_step(batch, device)
 
-            # Evaluation
             if (step + 1) % args.chkpt_interval == 0:
                 filename = f"epoch_{epoch}-step_{step}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
