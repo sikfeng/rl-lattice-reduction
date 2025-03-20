@@ -393,11 +393,15 @@ class ReductionEnvironment:
 
         return self._get_observation(), self._get_info()
 
-    def _action_to_block(self, action: int) -> Tuple[int, int]:
+    def _action_to_block(self, action: int) -> int:
         """Convert single action index to block size"""
         assert action < self.config.actions_n, f"Action {action} provided, but only {self.config.actions_n} actions available!"
 
         return action + self.config.min_block_size
+
+    def _block_to_action(self, block_size: int) -> int:
+        # _block_to_action should be the (both left and right) inverse of _action_to_block
+        return block_size - self.config.min_block_size
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         if action == self.config.actions_n:
