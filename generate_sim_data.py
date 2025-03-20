@@ -11,6 +11,7 @@ from load_dataset import load_lattice_dataloaders
 from ppo_agent import ActorCritic
 from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
+
 def process_batch(batch, env_config, seed):
     # Set seeds for reproducibility
     random.seed(seed)
@@ -22,16 +23,16 @@ def process_batch(batch, env_config, seed):
     # Create environment instance for this batch
     env = ReductionEnvironment(env_config)
     samples = []
-    
+
     state, info = env.reset(options=batch[0])
     done = False
     prev_block = 2
-    
+
     while not done and env_config.max_block_size > prev_block:
         block_size = random.randint(prev_block + 1, env_config.max_block_size)
         action = env._block_to_action(block_size)
         next_state, _, terminated, truncated, next_info = env.step(action)
-        
+
         state_info = ActorCritic.preprocess_inputs(state)
         next_state_info = ActorCritic.preprocess_inputs(next_state)
         samples.append({
@@ -41,16 +42,18 @@ def process_batch(batch, env_config, seed):
             "next_block_size": env._action_to_block(next_state_info["last_action"]),
             "time_taken": next_info["time"] - info["time"]
         })
-        
+
         state = next_state
         info = next_info
         prev_block = block_size
         done = terminated or truncated
-    
+
     return samples
+
 
 def process_batch_wrapper(args):
     return process_batch(*args)
+
 
 def main():
     distributions = ["uniform", "qary", "ntrulike"]
@@ -74,7 +77,8 @@ def main():
     if args.max_block_size > args.dim:
         raise ValueError("max_block_size must be at most dim.")
     if args.min_block_size > args.max_block_size:
-        raise ValueError("min_block_size cannot be greater than max_block_size.")
+        raise ValueError(
+            "min_block_size cannot be greater than max_block_size.")
 
     print(args)
 
@@ -110,7 +114,7 @@ def main():
         epoch_batches = []
         for batch in train_loader:
             epoch_batches.append(batch)
-        
+
         # Prepare tasks with unique seeds
         tasks = []
         num_batches = len(epoch_batches)
@@ -118,7 +122,7 @@ def main():
             # Generate unique seed for each batch
             task_seed = args.seed + epoch * num_batches + batch_idx
             tasks.append((batch, env_config, task_seed))
-        
+
         # Process batches in parallel
         with multiprocessing.Pool(args.processes) as pool:
             results = list(tqdm(
@@ -126,13 +130,15 @@ def main():
                 total=len(tasks),
                 desc="Processing batches"
             ))
-        
+
         # Aggregate results
         for result in results:
             samples.extend(result)
 
-    # Save all samples
-    np.save(f"sim_training_data_{args.distribution}_{args.dim}.npy", samples)
+    output_dir = Path("sim_training_data")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.save(f"sim_training_data/{args.distribution}_{args.dim}.npy", samples)
+
 
 if __name__ == "__main__":
     main()
