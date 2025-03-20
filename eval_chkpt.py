@@ -119,7 +119,7 @@ def main():
     logging.info(str(metrics["test"]))
 
     if args.chkpt is not None:
-        yaml_file = Path(args.chkpt).with_suffix("yml")
+        yaml_file = Path(args.chkpt).with_suffix(".yaml")
         with open(yaml_file, "w") as f:
             yaml.safe_dump(metrics, f, sort_keys=False)
 
