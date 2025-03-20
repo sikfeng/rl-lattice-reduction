@@ -395,7 +395,7 @@ class PPOAgent(nn.Module):
                     shortest_length_history[-1]
 
             return {
-                "avg_reward": total_reward / num_samples,
+                "avg_reward": total_reward.item() / num_samples,
                 "avg_steps": total_steps / num_samples,
                 "success_rate": success_count / num_samples,
                 "avg_shortness": shortness / num_samples,
