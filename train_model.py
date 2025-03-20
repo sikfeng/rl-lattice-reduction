@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--eval-interval", type=int, default=1000)
+    parser.add_argument("--chkpt-interval", type=int, default=1000)
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str,
                         choices=distributions)
@@ -81,7 +81,7 @@ def main():
     data_dir = Path("random_bases")
 
     # Create DataLoaders
-    train_loader, val_loader, test_loader = load_lattice_dataloaders(
+    train_loader, _, _ = load_lattice_dataloaders(
         data_dir=data_dir,
         dimension=args.dim,
         distribution_type=args.distribution,
@@ -106,6 +106,9 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
+    filename = f"pretrained.pth"
+    torch.save(agent.state_dict(), checkpoint_dir / filename)
+
     # Training loop
     agent.train()
     for epoch in tqdm(range(args.epochs), dynamic_ncols=True):
@@ -113,19 +116,9 @@ def main():
             agent.train_step(batch, device)
 
             # Evaluation
-            if (step + 1) % args.eval_interval == 0:
-                val_metrics = agent.evaluate(val_loader, device)
-                logging.info(f"Epoch {epoch}, Step {step}")
-                logging.info(str(val_metrics))
-
-                filename = f"epoch_{epoch}-step_{step}-valSuccess{val_metrics['success_rate']:.2f}.pth"
+            if (step + 1) % args.chkpt_interval == 0:
+                filename = f"epoch_{epoch}-step_{step}.pth"
                 torch.save(agent.state_dict(), checkpoint_dir / filename)
-
-                agent.train()
-
-    test_metrics = agent.evaluate(test_loader, device)
-    logging.info(f"Test:")
-    logging.info(str(test_metrics))
 
 
 if __name__ == "__main__":
