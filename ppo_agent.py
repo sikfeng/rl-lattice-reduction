@@ -1,7 +1,6 @@
 import math
 from typing import Dict, Tuple, Union
 
-from einops import repeat
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
@@ -266,7 +265,6 @@ class ActorCritic(nn.Module):
             diag = torch.diag(R).abs()
             gs_norms[i, :actual_dim] = diag
 
-        # Create and return TensorDict with all features
         return TensorDict({
             "gs_norms": gs_norms,
             "last_action": tensordict["last_action"],
@@ -291,9 +289,10 @@ class PPOConfig:
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, ppo_config: PPOConfig) -> None:
+    def __init__(self, ppo_config: PPOConfig, device: Union[torch.device, str]) -> None:
         super().__init__()
         self.ppo_config = ppo_config
+        self.device = device
         self.action_dim = self.ppo_config.env_config.actions_n
 
         self.actor_critic = ActorCritic(
@@ -358,11 +357,13 @@ class PPOAgent(nn.Module):
 
         return action, dist.log_prob(action), value
 
-    def update(self, device: Union[torch.device, str]) -> None:
+    def update(self) -> None:
         if len(self.replay_buffer) < self.ppo_config.env_config.batch_size:
             return None
 
-        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(device)
+        self.train()
+
+        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
 
         states = batch["state"]
         next_states = batch["next_state"]
@@ -417,17 +418,10 @@ class PPOAgent(nn.Module):
             surr2 = torch.clamp(ratios, 1 - self.ppo_config.clip_epsilon,
                                 1 + self.ppo_config.clip_epsilon) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
-
-            # Value loss
             critic_loss = self.mse_loss(values, returns.squeeze(1))
-
-            # Entropy bonus
             entropy_loss = -dist.entropy().mean()
-
-            # Total loss
             loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
-            # Optimize
             self.optimizer.zero_grad()
             loss.backward()
 
@@ -439,38 +433,30 @@ class PPOAgent(nn.Module):
         self.replay_buffer.empty()
         return avg_reward
 
-    def train_step(self, batch: TensorDict, device: Union[torch.device, str]) -> float:
-        self.train()
-
-        # Reset environment
-        state, _ = self.env.reset(options=batch[0])
+    def collect_experiences(self) -> float:
+        state, _ = self.env.reset()
         done = False
 
-        state = TensorDict({k: v.unsqueeze(0).to(device)
+        state = TensorDict({k: v.unsqueeze(0).to(self.device)
                            for k, v in state.items()}, batch_size=[])
-        # Run episode
         while not done:
-            action, log_prob, _ = self.get_action(state.to(device))
+            action, log_prob, _ = self.get_action(state.to(self.device))
             next_state, reward, terminated, truncated, _ = self.env.step(
                 action)
             done = terminated or truncated
 
-            next_state = TensorDict({k: v.unsqueeze(0).to(device)
+            next_state = TensorDict({k: v.unsqueeze(0).to(self.device)
                                     for k, v in next_state.items()}, batch_size=[])
-
             self.store_transition(
                 state,
                 action,
                 log_prob,
-                torch.tensor([reward], dtype=torch.float32).to(device),
-                torch.tensor([done], dtype=torch.bool).to(device),
+                torch.tensor([reward], dtype=torch.float32).to(self.device),
+                torch.tensor([done], dtype=torch.bool).to(self.device),
                 next_state
             )
             state = next_state
-
-        # Update agent
-        avg_reward = self.update(device)
-        return avg_reward
+        return
 
     def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()

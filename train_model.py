@@ -10,7 +10,6 @@ import torch
 from tqdm import tqdm
 
 from ppo_agent import PPOAgent, PPOConfig
-from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
 
 
@@ -21,7 +20,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--chkpt-interval", type=int, default=1000)
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str,
@@ -78,30 +77,18 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
-    data_dir = Path("random_bases")
-
-    # Create DataLoaders
-    train_loader, _, _ = load_lattice_dataloaders(
-        data_dir=data_dir,
-        dimension=args.dim,
-        distribution_type=args.distribution,
-        batch_size=1,
-        shuffle=True,
-        device=device
-    )
-
-    # Environment and agent configuration
     env_config = ReductionEnvConfig(
         max_basis_dim=args.dim,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
         length_reward_weight=args.length_reward_weight,
-        time_limit=args.time_limit
+        time_limit=args.time_limit,
+        distribution=args.distribution
     )
 
     ppo_config = PPOConfig(env_config=env_config)
-    agent = PPOAgent(ppo_config=ppo_config).to(device)
+    agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
@@ -109,15 +96,15 @@ def main():
     filename = f"pretrained.pth"
     torch.save(agent.state_dict(), checkpoint_dir / filename)
 
-    # Training loop
     agent.train()
-    for epoch in tqdm(range(args.epochs), dynamic_ncols=True):
-        for step, batch in enumerate(tqdm(train_loader, dynamic_ncols=True)):
-            agent.train_step(batch, device)
+    for step in (tqdm(range(args.episodes), dynamic_ncols=True)):
+        agent.collect_experiences()
+        agent.update()
 
-            if (step + 1) % args.chkpt_interval == 0:
-                filename = f"epoch_{epoch}-step_{step}.pth"
-                torch.save(agent.state_dict(), checkpoint_dir / filename)
+        if (step + 1) % args.chkpt_interval == 0:
+            filename = f"episodes_{step}.pth"
+            torch.save(agent.state_dict(), checkpoint_dir / filename)
+            logging.info(f"Saved to {checkpoint_dir / filename}")
 
 
 if __name__ == "__main__":
