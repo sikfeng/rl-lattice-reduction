@@ -92,7 +92,7 @@ def main():
 
     # Environment and agent configuration
     env_config = ReductionEnvConfig(
-        basis_dim=args.dim,
+        max_basis_dim=args.dim,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
