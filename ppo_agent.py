@@ -31,7 +31,7 @@ class PositionalEncoding(nn.Module):
         Arguments:
             x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
-        x = x + self.pe[:x.size(1)]
+        x = x + self.pe[:, :x.size(1), :]
         return x
 
 
@@ -80,6 +80,8 @@ class ActorCritic(nn.Module):
         self.action_dim = action_dim
         self.basis_dim = basis_dim
 
+        self.dropout_p = dropout_p
+
         self.gs_norms_features_hidden_dim = 128
         self.action_embedding_dim = 8
 
@@ -93,7 +95,7 @@ class ActorCritic(nn.Module):
         )
 
         self.action_embedding = nn.Embedding(
-            action_dim, self.action_embedding_dim)
+            action_dim + 1, self.action_embedding_dim)
 
         self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
             self.action_embedding_dim
@@ -120,10 +122,10 @@ class ActorCritic(nn.Module):
         )
 
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.gs_norms_features_hidden_dim,
+            d_model=self.gs_norms_features_hidden_dim + self.action_embedding_dim,
             nhead=4,
             dim_feedforward=4*self.gs_norms_features_hidden_dim,
-            dropout=dropout_p,
+            dropout=self.dropout_p,
             batch_first=True
         )
         self.gs_norm_simulator = nn.TransformerDecoder(
@@ -131,9 +133,10 @@ class ActorCritic(nn.Module):
             num_layers=3
         )
         self.time_simulator = nn.Sequential(
-            nn.Linear(self.combined_feature_dim + self.action_embedding_dim, self.combined_feature_dim),
+            nn.Linear(self.combined_feature_dim +
+                      self.action_embedding_dim, self.combined_feature_dim),
             nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
+            nn.Dropout(p=self.dropout_p),
             nn.Linear(self.combined_feature_dim, 1)
         )
 
@@ -160,97 +163,6 @@ class ActorCritic(nn.Module):
         # Forward through actor and critic heads
         return self.actor(combined), self.critic(combined).squeeze(-1)
 
-    def simulate(self, gs_norms, previous_block_size, block_size) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Simulate the Gram-Schmidt norms after applying BKZ with a specific block size.
-        
-        Args:
-            gs_norms (torch.Tensor): Current Gram-Schmidt norms [batch_size, basis_dim]
-            previous_block_size (torch.Tensor): Previously used block size [batch_size]
-            block_size (torch.Tensor): Block size to use for simulation [batch_size]
-            
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: (simulated_gs_norms, estimated_time)
-        """
-        batch_size = gs_norms.size(0)
-        seq_length = gs_norms.size(1)
-        device = gs_norms.device
-        
-        # Encode the input GS norms
-        gs_norms_reshaped = gs_norms.unsqueeze(-1)  # [batch_size, basis_dim, 1]
-        memory = self.gs_norms_encoder(gs_norms_reshaped, 
-                                    torch.full((batch_size,), seq_length, device=device))
-        
-        # Create block size embeddings
-        prev_action_embedding = self.action_embedding(previous_block_size.long()).squeeze(1)
-        action_embedding = self.action_embedding(block_size.long()).squeeze(1)
-        
-        # Combine features for time estimation - now using both previous and current block size
-        gs_norms_avg = memory.mean(dim=1)  # [batch_size, hidden_dim]
-        # Add difference between current and previous block size embedding to capture transition
-        combined = torch.cat([gs_norms_avg, prev_action_embedding, action_embedding], dim=1)
-        
-        # Estimate time
-        estimated_time = self.time_simulator(combined)
-        
-        # Enhance memory with block size information
-        block_size_emb = action_embedding.unsqueeze(1).expand(-1, seq_length, -1)
-        memory = memory + block_size_emb.unsqueeze(1).expand(-1, seq_length, -1)
-        
-        # Generate GS norms autoregressively
-        predicted_norms = torch.zeros(batch_size, seq_length, device=device)
-        
-        # Create initial input (first token)
-        current_decoder_input = torch.zeros(batch_size, 1, 1, device=device)
-        
-        # Project to embedding dimension
-        tgt = self.gs_norms_encoder.input_projection(current_decoder_input)
-        
-        for i in range(seq_length):
-            # Add positional encoding
-            pos_encoded_tgt = self.gs_norms_encoder.pos_encoding(tgt)
-            
-            # Create causal mask for autoregressive generation
-            tgt_mask = None
-            if i > 0:
-                tgt_mask = torch.triu(torch.ones(i+1, i+1, device=device) * float('-inf'), diagonal=1)
-            
-            # Run through decoder
-            decoder_output = self.gs_norm_simulator(
-                tgt=pos_encoded_tgt,
-                memory=memory,
-                tgt_mask=tgt_mask
-            )
-            
-            # Get the last position's output
-            next_norm_embedding = decoder_output[:, -1:]  # [batch_size, 1, hidden_dim]
-            
-            # Project to get the norm value
-            next_norm = torch.nn.functional.linear(
-                next_norm_embedding, 
-                self.gs_norms_encoder.input_projection.weight.t(), 
-                self.gs_norms_encoder.input_projection.bias
-            )
-            
-            # Apply positive constraint (GS norms are positive)
-            next_norm = torch.abs(next_norm)
-            
-            # Store the predicted norm
-            predicted_norms[:, i] = next_norm.squeeze(-1).squeeze(-1)
-            
-            # Prepare for next iteration - only if not the last step
-            if i < seq_length - 1:
-                # Concatenate with previous inputs
-                current_decoder_input = torch.cat([
-                    current_decoder_input, 
-                    next_norm
-                ], dim=1)
-                
-                # Re-embed for next iteration
-                tgt = self.gs_norms_encoder.input_projection(current_decoder_input)
-        
-        return predicted_norms, estimated_time.squeeze(-1)
-
     @staticmethod
     def preprocess_inputs(tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]
@@ -264,6 +176,86 @@ class ActorCritic(nn.Module):
             "gs_norms": gs_norms,
             "last_action": tensordict["last_action"]
         }, batch_size=[])
+
+    def simulate(self, current_gs_norms: torch.Tensor, previous_action: torch.Tensor, current_action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Simulate the Gram-Schmidt norms after applying BKZ with a specific block size.
+
+        Args:
+            gs_norms (torch.Tensor): Current Gram-Schmidt norms [batch_size, basis_dim]
+            previous_block_size (torch.Tensor): Previously used block size [batch_size]
+            block_size (torch.Tensor): Block size to use for simulation [batch_size]
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (simulated_gs_norms, estimated_time)
+        """
+        batch_size, basis_dim = current_gs_norms.shape
+        device = current_gs_norms.device
+
+        # [batch_size, basis_dim, 1]
+        gs_norms_3d = current_gs_norms.unsqueeze(-1)
+        encoded_gs_norms = self.gs_norms_encoder(
+            gs_norms_3d,
+            torch.full((batch_size,), basis_dim, device=device)
+        )  # [batch_size, basis_dim, hidden_dim]
+        prev_action_embedding = self.action_embedding(
+            previous_action.long()).squeeze(1)
+        current_action_embedding = self.action_embedding(
+            current_action.long()).squeeze(1)
+
+        time_sim_context = torch.cat([
+            encoded_gs_norms.mean(dim=1),
+            prev_action_embedding,
+            current_action_embedding
+        ], dim=1)
+        simulated_time = self.time_simulator(time_sim_context)
+
+        gs_norm_sim_context = torch.cat([
+            encoded_gs_norms,
+            current_action_embedding.unsqueeze(1).expand(-1, basis_dim, -1)
+        ], dim=2)
+        simulated_gs_norms = torch.zeros(batch_size, basis_dim, device=device)
+        generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
+
+        for i in range(basis_dim):
+            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+            tgt = self.gs_norms_encoder.pos_encoding(tgt)
+
+            # Create causal mask for autoregressive generation
+            tgt_mask = None
+            if i > 0:
+                tgt_mask = torch.triu(torch.ones(
+                    i+1, i+1, device=device) * float('-inf'), diagonal=1)
+
+            tgt = torch.cat([tgt, current_action_embedding.unsqueeze(
+                1).expand(-1, tgt.size(1), -1)], dim=2)
+            decoder_output = self.gs_norm_simulator(
+                tgt=tgt,
+                memory=gs_norm_sim_context,
+                tgt_mask=tgt_mask
+            )
+            # [batch_size, 1, hidden_dim]
+            current_prediction = decoder_output[:, -
+                                                1:, :self.gs_norms_features_hidden_dim]
+
+            # Project to get the norm value, tie with input projection weights
+            predicted_norm = torch.nn.functional.linear(
+                current_prediction,
+                self.gs_norms_encoder.input_projection.weight.t(),
+                # self.gs_norms_encoder.input_projection.bias
+                bias=None
+            )
+            predicted_norm = torch.abs(predicted_norm)  # Enforce positivity
+
+            simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
+
+            if i < basis_dim - 1:
+                generated_sequence = torch.cat([
+                    generated_sequence,
+                    predicted_norm.detach()
+                ], dim=1)
+
+        return simulated_gs_norms, simulated_time.squeeze(-1)
 
 
 class PPOConfig:
@@ -310,7 +302,7 @@ class PPOAgent(nn.Module):
 
         self.env = ReductionEnvironment(self.ppo_config.env_config)
 
-    def store_transition(self, state, action, log_prob, reward, done, next_state):
+    def store_transition(self, state, action, log_prob, reward, done, next_state, time_taken):
         td = TensorDict({
             "state": {
                 "basis": state["basis"],
@@ -323,7 +315,8 @@ class PPOAgent(nn.Module):
             "next_state": {
                 "basis": next_state["basis"],
                 "last_action": next_state["last_action"]
-            }
+            },
+            "time_taken": time_taken
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
@@ -404,15 +397,24 @@ class PPOAgent(nn.Module):
             surr2 = torch.clamp(ratios, 1 - self.ppo_config.clip_epsilon,
                                 1 + self.ppo_config.clip_epsilon) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
-
-            # Value loss
             critic_loss = self.mse_loss(values, returns.squeeze(1))
-
-            # Entropy bonus
             entropy_loss = -dist.entropy().mean()
 
-            # Total loss
-            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
+            current_features = self.actor_critic.preprocess_inputs(states)
+            next_features = self.actor_critic.preprocess_inputs(next_states)
+            predicted_gs_norms, predicted_time = self.actor_critic.simulate(
+                current_features["gs_norms"],
+                current_features["last_action"],
+                actions)
+
+            # Calculate simulator losses
+            gs_norm_sim_loss = torch.nn.functional.mse_loss(
+                predicted_gs_norms, next_features["gs_norms"])
+            time_sim_loss = torch.nn.functional.mse_loss(
+                predicted_time, batch["time_taken"])
+
+            loss = actor_loss + 0.5 * critic_loss + 0.01 * \
+                entropy_loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
 
             # Optimize
             self.optimizer.zero_grad()
@@ -430,7 +432,7 @@ class PPOAgent(nn.Module):
         self.train()
 
         # Reset environment
-        state, _ = self.env.reset(options=batch[0])
+        state, info = self.env.reset(options=batch[0])
         done = False
 
         state = TensorDict({k: v.unsqueeze(0).to(device)
@@ -438,7 +440,7 @@ class PPOAgent(nn.Module):
         # Run episode
         while not done:
             action, log_prob, _ = self.get_action(state.to(device))
-            next_state, reward, terminated, truncated, _ = self.env.step(
+            next_state, reward, terminated, truncated, next_info = self.env.step(
                 action)
             done = terminated or truncated
 
@@ -451,9 +453,12 @@ class PPOAgent(nn.Module):
                 log_prob,
                 torch.tensor([reward], dtype=torch.float32).to(device),
                 torch.tensor([done], dtype=torch.bool).to(device),
-                next_state
+                next_state,
+                torch.tensor([next_info["time"] - info["time"]],
+                             dtype=torch.float32).to(device)
             )
             state = next_state
+            info = next_info
 
         # Update agent
         avg_reward = self.update(device)
