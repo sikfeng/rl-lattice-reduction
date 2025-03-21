@@ -322,10 +322,9 @@ class BKZReduction(object):
 class ReductionEnvConfig:
     # If not provided, will be set to 2 * basis_dim
     max_steps: Optional[int] = None
-    min_block_size: int = 2  # inclusive
     max_block_size: int = None  # inclusive
     time_limit: float = 1.0
-    basis_dim: int = None
+    max_basis_dim: int = None
     batch_size: int = 1
 
     time_penalty_weight: float = -1.0
@@ -334,9 +333,9 @@ class ReductionEnvConfig:
 
     def __post_init__(self):
         if self.max_steps is None:
-            self.max_steps = 2 * self.basis_dim
+            self.max_steps = 2 * self.max_basis_dim
 
-        self.actions_n = self.max_block_size - self.min_block_size + 1
+        self.actions_n = self.max_block_size
 
 
 class ReductionEnvironment:
@@ -345,7 +344,7 @@ class ReductionEnvironment:
         self.config = config
 
     def _get_observation(self) -> Dict[str, torch.Tensor]:
-        basis = np.zeros((self.config.basis_dim, self.config.basis_dim))
+        basis = np.zeros((self.config.max_basis_dim, self.config.max_basis_dim))
         basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
 
         last_action = torch.tensor(
@@ -353,7 +352,8 @@ class ReductionEnvironment:
 
         return {
             "basis": basis,
-            "last_action": last_action
+            "last_action": last_action,
+            "basis_dim": torch.tensor([self.basis.ncols])
         }
 
     def _get_info(self) -> Dict[str, Any]:
@@ -382,8 +382,7 @@ class ReductionEnvironment:
         with self.tracer.context("lll"):
             self.bkz.lll_obj()
 
-        # TODO: min_block_size may not be 2!
-        self.action_history = [0]  # initial basis is always LLL reduced
+        self.action_history = [1]  # initial basis is always LLL reduced
         self.log_defect_history = []
         self.shortest_length_history = []
         self.time_history = []
@@ -397,14 +396,14 @@ class ReductionEnvironment:
         """Convert single action index to block size"""
         assert action < self.config.actions_n, f"Action {action} provided, but only {self.config.actions_n} actions available!"
 
-        return action + self.config.min_block_size
+        return action + 1
 
     def _block_to_action(self, block_size: int) -> int:
         # _block_to_action should be the (both left and right) inverse of _action_to_block
-        return block_size - self.config.min_block_size
+        return block_size - 1
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
-        if action == self.config.actions_n:
+        if action == 0:
             self.terminated = True
             self.truncated = self._check_truncation()
 

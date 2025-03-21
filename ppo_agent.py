@@ -75,21 +75,22 @@ class TransformerEncoder(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, basis_dim: int, action_dim: int, dropout_p: float = 0.1) -> None:
+    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1) -> None:
         super().__init__()
         self.action_dim = action_dim
-        self.basis_dim = basis_dim
+        self.max_basis_dim = max_basis_dim
 
         self.gs_norms_features_hidden_dim = 128
         self.action_embedding_dim = 8
+        self.dropout_p = dropout_p
 
         self.gs_norms_encoder = TransformerEncoder(
             input_dim=1,
             embedding_dim=self.gs_norms_features_hidden_dim,
             num_heads=4,
             num_layers=3,
-            dropout_p=dropout_p,
-            max_len=basis_dim
+            dropout_p=self.dropout_p,
+            max_len=self.max_basis_dim
         )
 
         self.action_embedding = nn.Embedding(
@@ -106,7 +107,7 @@ class ActorCritic(nn.Module):
             nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, action_dim + 1),
+            nn.Linear(self.actor_hidden_dim, action_dim),
             nn.Softmax(dim=-1)
         )
         self.critic = nn.Sequential(
@@ -141,12 +142,10 @@ class ActorCritic(nn.Module):
         tensordict = self.preprocess_inputs(tensordict)
 
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
+        basis_dim = tensordict["basis_dim"]  # [batch_size]
 
-        batch_size = gs_norms.size(0)
-        seq_length = gs_norms.size(1)
         gs_norms_reshaped = gs_norms.unsqueeze(-1)
-        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, torch.full(
-            (batch_size,), seq_length, device=gs_norms.device))
+        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
         gs_norms_features = gs_norms_features.mean(dim=1)
 
         action_embedding = self.action_embedding(
@@ -251,18 +250,27 @@ class ActorCritic(nn.Module):
         
         return predicted_norms, estimated_time.squeeze(-1)
 
-    @staticmethod
-    def preprocess_inputs(tensordict: TensorDict) -> TensorDict:
+    def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]
+        basis_dim = tensordict["basis_dim"]
+        batch_size = basis.size(0)
+        max_basis_dim = self.max_basis_dim
+        device = basis.device
 
-        # Q has orthonormal rows, hence diagonal elements of R are the GS norms
-        _, R = torch.linalg.qr(basis)
-        gs_norms = torch.abs(torch.diagonal(R, dim1=-2, dim2=-1))
+        gs_norms = torch.zeros(batch_size, max_basis_dim, device=device)
+
+        for i in range(batch_size):
+            actual_dim = basis_dim[i].item()
+            actual_basis = basis[i, :actual_dim, :actual_dim]
+            _, R = torch.linalg.qr(actual_basis)
+            diag = torch.diag(R).abs()
+            gs_norms[i, :actual_dim] = diag
 
         # Create and return TensorDict with all features
         return TensorDict({
             "gs_norms": gs_norms,
-            "last_action": tensordict["last_action"]
+            "last_action": tensordict["last_action"],
+            "basis_dim": basis_dim
         }, batch_size=[])
 
 
@@ -289,7 +297,7 @@ class PPOAgent(nn.Module):
         self.action_dim = self.ppo_config.env_config.actions_n
 
         self.actor_critic = ActorCritic(
-            self.ppo_config.env_config.basis_dim,
+            self.ppo_config.env_config.max_basis_dim,
             self.action_dim,
             ppo_config.dropout_p
         )
@@ -314,7 +322,8 @@ class PPOAgent(nn.Module):
         td = TensorDict({
             "state": {
                 "basis": state["basis"],
-                "last_action": state["last_action"]
+                "last_action": state["last_action"],
+                "basis_dim": state["basis_dim"]
             },
             "action": action,
             "log_prob": log_prob,
@@ -322,23 +331,27 @@ class PPOAgent(nn.Module):
             "done": done,
             "next_state": {
                 "basis": next_state["basis"],
-                "last_action": next_state["last_action"]
+                "last_action": next_state["last_action"],
+                "basis_dim": next_state["basis_dim"]
             }
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
-    def _mask_logits(self, logits, last_action):
-        indices = torch.arange(self.action_dim + 1,
-                               device=logits.device).unsqueeze(0)
+    def _mask_logits(self, logits, basis_dim, last_action):
+        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0)
         thresholds = last_action.unsqueeze(1)
-        mask = indices >= thresholds
+        # mask entries which are False will be masked out
+        # indices >= thresholds are entries not smaller than previous block size
+        # indices <= basis_dim are entries with block size smaller than dim
+        # indices == 0 is the termination action
+        mask = ((indices >= thresholds) & (indices <= basis_dim)) | (indices == 0)
         return logits.masked_fill(~mask, float('-inf'))
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
             logits, value = self.actor_critic(state)
 
-        masked_logits = self._mask_logits(logits, state["last_action"])
+        masked_logits = self._mask_logits(logits, state["basis_dim"], state["last_action"])
 
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
