@@ -277,10 +277,6 @@ class ActorCritic(nn.Module):
             "basis_dim": basis_dim
         }, batch_size=[])
 
-        return simulated_gs_norms, simulated_time.squeeze(-1)
-
-        return simulated_gs_norms, simulated_time.squeeze(-1)
-
 
 class PPOConfig:
     def __init__(self, env_config: ReductionEnvConfig = None,
