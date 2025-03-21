@@ -10,6 +10,8 @@ from fpylll.util import adjust_radius_to_gh_bound
 import numpy as np
 import torch
 
+from generate_basis import func as generate_random_basis
+
 FPLLL.set_precision(1000)
 
 
@@ -331,6 +333,8 @@ class ReductionEnvConfig:
     defect_reward_weight: float = 0.1
     length_reward_weight: float = 1.0
 
+    distribution: str = None
+
     def __post_init__(self):
         if self.max_steps is None:
             self.max_steps = 2 * self.max_basis_dim
@@ -364,7 +368,12 @@ class ReductionEnvironment:
             "action_history": self.action_history
         }
 
-    def reset(self, options: Dict[str, Any]) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+    def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+        if options is None:
+            basis_dim = self.config.max_basis_dim
+            options = generate_random_basis(None, basis_dim, self.config.distribution)
+            options["basis"] = torch.tensor(options["basis"])
+
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
         self.lll_log_defect = options["lll_log_defect"]
         self.gh = self.gaussian_heuristic(self.basis)
