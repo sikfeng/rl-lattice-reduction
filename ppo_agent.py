@@ -30,7 +30,7 @@ class PositionalEncoding(nn.Module):
         Arguments:
             x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
-        x = x + self.pe[:, :x.size(1), :]
+        x = x + self.pe[:, :, :x.size(1), :, :]
         return x
 
 
@@ -277,6 +277,10 @@ class ActorCritic(nn.Module):
             "basis_dim": basis_dim
         }, batch_size=[])
 
+        return simulated_gs_norms, simulated_time.squeeze(-1)
+
+        return simulated_gs_norms, simulated_time.squeeze(-1)
+
 
 class PPOConfig:
     def __init__(self, env_config: ReductionEnvConfig = None,
@@ -480,10 +484,8 @@ class PPOAgent(nn.Module):
                              dtype=torch.float32).to(self.device)
             )
             state = next_state
-
-        # Update agent
-        avg_reward = self.update(self.device)
-        return avg_reward
+            info = next_info
+        return
 
     def evaluate(self, dataloader: DataLoader, device: Union[torch.device, str]) -> Dict[str, float]:
         self.eval()
