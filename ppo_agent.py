@@ -92,8 +92,10 @@ class ActorCritic(nn.Module):
             max_len=self.max_basis_dim
         )
 
-        self.action_embedding = nn.Embedding(
-            action_dim, self.action_embedding_dim)
+        self.action_embedding = nn.Sequential(
+            nn.Linear(1, self.action_embedding_dim),
+            nn.LeakyReLU()
+        )
 
         self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
             self.action_embedding_dim
