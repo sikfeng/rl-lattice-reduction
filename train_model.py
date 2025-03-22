@@ -22,9 +22,8 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--episodes", type=int, default=1000)
     parser.add_argument("--chkpt-interval", type=int, default=1000)
-    parser.add_argument("-d", "--dim", type=int, default=4)
-    parser.add_argument("--distribution", type=str,
-                        choices=distributions)
+    parser.add_argument("--dim", type=int, default=32)
+    parser.add_argument("--dist", type=str, required=True, choices=distributions)
     parser.add_argument("--max-block-size", type=int)
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
