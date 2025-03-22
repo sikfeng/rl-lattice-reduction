@@ -9,7 +9,7 @@ import numpy as np
 from tensordict import TensorDict
 import torch
 from torch.utils.data import DataLoader
-import torchmetrics
+from torchmetrics.aggregation import MeanMetric
 from tqdm import tqdm
 
 from ppo_agent import PPOAgent, PPOConfig
@@ -19,13 +19,12 @@ from reduction_env import ReductionEnvConfig
 def evaluate(agent: PPOAgent, dataloader: DataLoader, device: torch.device):
     agent.eval()
     with torch.no_grad():
-        total_reward = 0.0
-        total_steps = 0
-        success_count = 0
-        shortness = 0.0
-        length_improvement = 0.0
-        time_taken = 0.0
-        num_samples = len(dataloader.dataset)
+        reward_metric = MeanMetric()
+        steps_metric = MeanMetric()
+        success_metric = MeanMetric()
+        shortness_metric = MeanMetric()
+        length_improvement_metric = MeanMetric()
+        time_metric = MeanMetric()
 
         for batch in tqdm(dataloader, dynamic_ncols=True):
             state, info = agent.env.reset(options=batch[0])
@@ -50,21 +49,20 @@ def evaluate(agent: PPOAgent, dataloader: DataLoader, device: torch.device):
                 steps += 1
                 state = next_state
 
-            total_reward += episode_reward
-            total_steps += steps
-
-            shortness += min(shortest_length_history)
-            success_count += min(shortest_length_history) < 1.05
-            time_taken += time_history[-1] - time_history[0]
-            length_improvement += shortest_length_history[0] - min(shortest_length_history)
+            reward_metric.update(episode_reward)
+            steps_metric.update(steps)
+            shortness_metric.update(min(shortest_length_history))
+            success_metric.update(min(shortest_length_history) < 1.05)
+            time_metric.update(time_history[-1] - time_history[0])
+            length_improvement_metric.update(shortest_length_history[0] - min(shortest_length_history))
 
         return {
-            "avg_reward": total_reward.item() / num_samples,
-            "avg_steps": total_steps / num_samples,
-            "success_rate": success_count / num_samples,
-            "avg_shortness": shortness / num_samples,
-            "avg_length_improvement": length_improvement / num_samples,
-            "avg_time": time_taken / num_samples
+            "avg_reward": reward_metric.compute(),
+            "avg_steps": steps_metric.compute(),
+            "success_rate": success_metric.compute(),
+            "avg_shortness": shortness_metric.compute(),
+            "avg_length_improvement": length_improvement_metric.compute(),
+            "avg_time": time_metric.compute()
         }
 
 def eval_model(agent, val_loader, test_loader, device):
