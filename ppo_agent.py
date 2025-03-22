@@ -93,7 +93,7 @@ class ActorCritic(nn.Module):
         )
 
         self.action_embedding = nn.Sequential(
-            nn.Linear(1, self.action_embedding_dim),
+            nn.Linear(2, self.action_embedding_dim),
             nn.LeakyReLU()
         )
 
@@ -126,17 +126,23 @@ class ActorCritic(nn.Module):
 
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
+        previous_action = tensordict["last_action"]
 
         gs_norms_reshaped = gs_norms.unsqueeze(-1)
         gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
         gs_norms_features = gs_norms_features.mean(dim=1)
 
-        action_embedding = self.action_embedding(
-            tensordict["last_action"].long()).squeeze(1)
+        indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
+        # block size \(b\) corresponds to action id \(b - 1\)
+        previous_effective_block_size = torch.min(previous_action.expand(-1, self.max_basis_dim), basis_dim - indices) + 1
+        previous_relative_block_size = previous_effective_block_size / basis_dim
+        prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
+        prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+
         # Combine all features
         combined = torch.cat([
             gs_norms_features,
-            action_embedding
+            prev_action_embedding.mean(dim=1)
         ], dim=1)
 
         # Forward through actor and critic heads
