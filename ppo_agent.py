@@ -79,8 +79,6 @@ class ActorCritic(nn.Module):
         self.action_dim = action_dim
         self.max_basis_dim = max_basis_dim
 
-        self.dropout_p = dropout_p
-
         self.gs_norms_features_hidden_dim = 128
         self.action_embedding_dim = 8
         self.dropout_p = dropout_p
@@ -94,8 +92,10 @@ class ActorCritic(nn.Module):
             max_len=self.max_basis_dim
         )
 
-        self.action_embedding = nn.Embedding(
-            action_dim + 1, self.action_embedding_dim)
+        self.action_embedding = nn.Sequential(
+            nn.Linear(1, self.action_embedding_dim),
+            nn.LeakyReLU()
+        )
 
         self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
             self.action_embedding_dim
@@ -151,7 +151,7 @@ class ActorCritic(nn.Module):
         gs_norms_features = gs_norms_features.mean(dim=1)
 
         action_embedding = self.action_embedding(
-            tensordict["last_action"].long()).squeeze(1)
+            tensordict["last_action"]).squeeze(1)
         # Combine all features
         combined = torch.cat([
             gs_norms_features,
@@ -160,20 +160,6 @@ class ActorCritic(nn.Module):
 
         # Forward through actor and critic heads
         return self.actor(combined), self.critic(combined).squeeze(-1)
-
-    @staticmethod
-    def preprocess_inputs(tensordict: TensorDict) -> TensorDict:
-        basis = tensordict["basis"]
-
-        # Q has orthonormal rows, hence diagonal elements of R are the GS norms
-        _, R = torch.linalg.qr(basis)
-        gs_norms = torch.abs(torch.diagonal(R, dim1=-2, dim2=-1))
-
-        # Create and return TensorDict with all features
-        return TensorDict({
-            "gs_norms": gs_norms,
-            "last_action": tensordict["last_action"]
-        }, batch_size=[])
 
     def simulate(self, current_gs_norms: torch.Tensor, previous_action: torch.Tensor, current_action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -197,9 +183,9 @@ class ActorCritic(nn.Module):
             torch.full((batch_size,), basis_dim, device=device)
         )  # [batch_size, basis_dim, hidden_dim]
         prev_action_embedding = self.action_embedding(
-            previous_action.long()).squeeze(1)
+            previous_action).squeeze(1)
         current_action_embedding = self.action_embedding(
-            current_action.long()).squeeze(1)
+            current_action).squeeze(1)
 
         time_sim_context = torch.cat([
             encoded_gs_norms.mean(dim=1),
@@ -433,7 +419,7 @@ class PPOAgent(nn.Module):
             predicted_gs_norms, predicted_time = self.actor_critic.simulate(
                 current_features["gs_norms"],
                 current_features["last_action"],
-                actions)
+                actions.float())
 
             # Calculate simulator losses
             gs_norm_sim_loss = torch.nn.functional.mse_loss(
