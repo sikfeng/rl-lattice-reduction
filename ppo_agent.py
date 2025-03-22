@@ -242,10 +242,10 @@ class ActorCritic(nn.Module):
                                                 1:, :self.gs_norms_features_hidden_dim]
 
             # Project to get the norm value, tie with input projection weights
+            current_prediction = current_prediction - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0)
             predicted_norm = torch.nn.functional.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
-                # self.gs_norms_encoder.input_projection.bias
                 bias=None
             )
 
