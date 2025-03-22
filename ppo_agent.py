@@ -229,7 +229,6 @@ class ActorCritic(nn.Module):
                 # self.gs_norms_encoder.input_projection.bias
                 bias=None
             )
-            predicted_norm = torch.abs(predicted_norm)  # Enforce positivity
 
             simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
 
