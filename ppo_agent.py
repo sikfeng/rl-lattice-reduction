@@ -154,12 +154,12 @@ class ActorCritic(nn.Module):
         _, max_basis_dim, _ = basis.shape
 
         mask = torch.arange(max_basis_dim, device=basis.device) < basis_dim.view(-1, 1, 1)
-        masked_basis = basis * mask.unsqueeze(-1)
+        masked_basis = basis * mask
 
         _, R = torch.linalg.qr(masked_basis)
         diag = torch.diagonal(R, dim1=-2, dim2=-1).abs()
 
-        gs_norms = diag * mask
+        gs_norms = diag * mask.squeeze(1)
 
         return TensorDict({
             "gs_norms": gs_norms,
