@@ -140,61 +140,67 @@ class ActorCritic(nn.Module):
             nn.Linear(self.combined_feature_dim, 1)
         )
 
-    def forward(self, tensordict: TensorDict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, tensordict: TensorDict, cached_states: Dict[str, torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        if cached_states is None:
+            cached_states = dict()
         tensordict = self.preprocess_inputs(tensordict)
 
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
         previous_action = tensordict["last_action"]
 
-        gs_norms_reshaped = gs_norms.unsqueeze(-1)
-        gs_norms_features = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
-        gs_norms_features = gs_norms_features.mean(dim=1)
+        if "gs_norms_embedding" in cached_states:
+            gs_norms_embedding = cached_states["gs_norms_embedding"]
+        else:
+            gs_norms_reshaped = gs_norms.unsqueeze(-1)
+            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
 
         indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
         # block size \(b\) corresponds to action id \(b - 1\)
-        previous_effective_block_size = torch.min(previous_action.expand(-1, self.max_basis_dim), basis_dim - indices) + 1
-        previous_relative_block_size = previous_effective_block_size / basis_dim
-        prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
-        prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+        if "prev_action_embedding" in cached_states:
+            prev_action_embedding = cached_states["prev_action_embedding"]
+        else:
+            previous_effective_block_size = torch.min(previous_action.expand(-1, self.max_basis_dim), basis_dim - indices) + 1
+            previous_relative_block_size = previous_effective_block_size / basis_dim
+            prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
+            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
 
         # Combine all features
         combined = torch.cat([
-            gs_norms_features,
+            gs_norms_embedding.mean(dim=1),
             prev_action_embedding.mean(dim=1)
         ], dim=1)
 
+        cached_states["gs_norms_embedding"] = gs_norms_embedding
+        cached_states["prev_action_embedding"] = prev_action_embedding
+
         # Forward through actor and critic heads
-        return self.actor(combined), self.critic(combined).squeeze(-1)
+        return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
 
-    def simulate(self, current_gs_norms: torch.Tensor, previous_action: torch.Tensor, current_action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Simulate the Gram-Schmidt norms after applying BKZ with a specific block size.
-
-        Args:
-            gs_norms (torch.Tensor): Current Gram-Schmidt norms [batch_size, basis_dim]
-            previous_block_size (torch.Tensor): Previously used block size [batch_size]
-            block_size (torch.Tensor): Block size to use for simulation [batch_size]
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: (simulated_gs_norms, estimated_time)
-        """
+    def simulate(self, current_gs_norms: torch.Tensor, previous_action: torch.Tensor, current_action: torch.Tensor, cached_states: Dict[str, torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        if cached_states is None:
+            cached_states = dict()
         batch_size, basis_dim = current_gs_norms.shape
         device = current_gs_norms.device
 
-        # [batch_size, basis_dim, 1]
-        gs_norms_3d = current_gs_norms.unsqueeze(-1)
-        encoded_gs_norms = self.gs_norms_encoder(
-            gs_norms_3d,
-            torch.full((batch_size,), basis_dim, device=device)
-        )  # [batch_size, basis_dim, hidden_dim]
+        if "gs_norms_embedding" in cached_states:
+            gs_norms_embedding = cached_states["gs_norms_embedding"]
+        else:
+            gs_norms_3d = current_gs_norms.unsqueeze(-1) # [batch_size, basis_dim, 1]
+            gs_norms_embedding = self.gs_norms_encoder(
+                gs_norms_3d,
+                torch.full((batch_size,), basis_dim, device=device)
+            )  # [batch_size, basis_dim, hidden_dim]
 
         indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
         # block size \(b\) corresponds to action id \(b - 1\)
-        previous_action_effective_block_size = torch.min(previous_action.expand(-1, basis_dim), basis_dim - indices) + 1
-        previous_action_relative_block_size = previous_action_effective_block_size / basis_dim
-        prev_action_embedding = torch.stack([previous_action_effective_block_size, previous_action_relative_block_size], dim=1)
-        prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+        if "prev_action_embedding" in cached_states:
+            prev_action_embedding = cached_states["prev_action_embedding"]
+        else:
+            previous_action_effective_block_size = torch.min(previous_action.expand(-1, basis_dim), basis_dim - indices) + 1
+            previous_action_relative_block_size = previous_action_effective_block_size / basis_dim
+            prev_action_embedding = torch.stack([previous_action_effective_block_size, previous_action_relative_block_size], dim=1)
+            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
 
         current_action_effective_block_size = torch.min(current_action.expand(-1, basis_dim), basis_dim - indices) + 1
         current_action_relative_block_size = current_action_effective_block_size / basis_dim
@@ -202,14 +208,14 @@ class ActorCritic(nn.Module):
         current_action_embedding = self.action_embedding(current_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
 
         time_sim_context = torch.cat([
-            encoded_gs_norms.mean(dim=1),
+            gs_norms_embedding.mean(dim=1),
             prev_action_embedding.mean(dim=1),
             current_action_embedding.mean(dim=1)
         ], dim=1)
         simulated_time = self.time_simulator(time_sim_context)
 
         gs_norm_sim_context = torch.cat([
-            encoded_gs_norms,
+            gs_norms_embedding,
             current_action_embedding
         ], dim=2)
         simulated_gs_norms = torch.zeros(batch_size, basis_dim, device=device)
@@ -251,7 +257,10 @@ class ActorCritic(nn.Module):
                     predicted_norm.detach()
                 ], dim=1)
 
-        return simulated_gs_norms, simulated_time.squeeze(-1)
+        cached_states["gs_norms_embedding"] = gs_norms_embedding
+        cached_states["prev_action_embedding"] = prev_action_embedding
+
+        return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]
@@ -281,7 +290,7 @@ class PPOConfig:
                  lr: float = 3e-4, gamma: float = 0.99,
                  gae_lambda: float = 0.95, clip_epsilon: float = 0.2,
                  clip_grad_norm: float = 0.5, epochs: int = 4,
-                 dropout_p: float = 0.2):
+                 dropout_p: float = 0.2, minibatch_size: int = 64):
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -289,6 +298,7 @@ class PPOConfig:
         self.clip_grad_norm = clip_grad_norm
         self.epochs = epochs
         self.dropout_p = dropout_p
+        self.minibatch_size = minibatch_size
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 
@@ -353,7 +363,7 @@ class PPOAgent(nn.Module):
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
-            logits, value = self.actor_critic(state)
+            logits, value, _ = self.actor_critic(state)
 
         masked_logits = self._mask_logits(logits, state["basis_dim"], state["last_action"])
 
@@ -363,7 +373,7 @@ class PPOAgent(nn.Module):
         return action, dist.log_prob(action), value
 
     def update(self) -> None:
-        if len(self.replay_buffer) < self.ppo_config.env_config.batch_size:
+        if len(self.replay_buffer) < self.ppo_config.minibatch_size:
             return None
 
         self.train()
@@ -390,8 +400,8 @@ class PPOAgent(nn.Module):
             The computed `values` and `next_values` are used to calculate the temporal-difference 
             errors (deltas), which are the building blocks for GAE.
             """
-            _, values = self.actor_critic(states)
-            _, next_values = self.actor_critic(next_states)
+            _, values, _ = self.actor_critic(states)
+            _, next_values, _ = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.ppo_config.gamma,
@@ -404,7 +414,7 @@ class PPOAgent(nn.Module):
 
         # Policy updates
         for _ in range(self.ppo_config.epochs):
-            logits, values = self.actor_critic(states)
+            logits, values, cached_states = self.actor_critic(states)
             dist = torch.distributions.Categorical(logits=logits)
             new_log_probs = dist.log_prob(actions)
 
@@ -428,10 +438,12 @@ class PPOAgent(nn.Module):
 
             current_features = self.actor_critic.preprocess_inputs(states)
             next_features = self.actor_critic.preprocess_inputs(next_states)
-            predicted_gs_norms, predicted_time = self.actor_critic.simulate(
+            predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
                 current_features["gs_norms"],
                 current_features["last_action"],
-                actions.float())
+                actions.float(),
+                cached_states
+            )
 
             # Calculate simulator losses
             gs_norm_sim_loss = torch.nn.functional.mse_loss(
