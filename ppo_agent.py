@@ -265,6 +265,7 @@ class ActorCritic(nn.Module):
             actual_basis = basis[i, :actual_dim, :actual_dim]
             _, R = torch.linalg.qr(actual_basis)
             diag = torch.diag(R).abs()
+            diag = torch.log(diag + 1e-8)
             gs_norms[i, :actual_dim] = diag
 
         return TensorDict({
