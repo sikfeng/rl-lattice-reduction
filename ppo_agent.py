@@ -263,20 +263,17 @@ class ActorCritic(nn.Module):
         return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
-        basis = tensordict["basis"]
-        basis_dim = tensordict["basis_dim"]
-        batch_size = basis.size(0)
-        max_basis_dim = self.max_basis_dim
-        device = basis.device
+        basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
+        basis_dim = tensordict["basis_dim"]  # [batch_size]
+        _, max_basis_dim, _ = basis.shape
 
-        gs_norms = torch.zeros(batch_size, max_basis_dim, device=device)
+        mask = torch.arange(max_basis_dim, device=basis.device) < basis_dim.view(-1, 1, 1)
+        masked_basis = basis * mask
 
-        for i in range(batch_size):
-            actual_dim = basis_dim[i].item()
-            actual_basis = basis[i, :actual_dim, :actual_dim]
-            _, R = torch.linalg.qr(actual_basis)
-            diag = torch.diag(R).abs()
-            gs_norms[i, :actual_dim] = diag
+        _, R = torch.linalg.qr(masked_basis)
+        diag = torch.diagonal(R, dim1=-2, dim2=-1).abs()
+
+        gs_norms = diag * mask.squeeze(1)
 
         return TensorDict({
             "gs_norms": gs_norms,
@@ -534,7 +531,7 @@ class PPOAgent(nn.Module):
                 shortness += min(shortest_length_history)
                 success_count += min(shortest_length_history) < 1.05
                 time_taken += time_history[-1] - time_history[0]
-                length_improvement += shortest_length_history[-0] - \
+                length_improvement += shortest_length_history[0] - \
                     shortest_length_history[-1]
 
             return {

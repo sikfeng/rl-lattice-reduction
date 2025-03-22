@@ -80,7 +80,7 @@ def main():
 
     # Environment and agent configuration
     env_config = ReductionEnvConfig(
-        basis_dim=args.dim,
+        max_basis_dim=args.dim,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,
@@ -98,7 +98,7 @@ def main():
             continue
 
         logging.info(f"Evaluating {pth_file}...")
-        agent = PPOAgent(ppo_config=ppo_config).to(device)
+        agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
         agent.load_state_dict(torch.load(pth_file))
 
         total_params = sum(p.numel() for p in agent.parameters())
