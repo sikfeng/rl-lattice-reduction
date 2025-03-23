@@ -74,18 +74,19 @@ class TransformerEncoder(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1) -> None:
+    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1,
+                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8) -> None:
         super().__init__()
         self.action_dim = action_dim
         self.max_basis_dim = max_basis_dim
 
-        self.gs_norms_features_hidden_dim = 128
-        self.action_embedding_dim = 8
+        self.gs_norms_hidden_dim = gs_norms_hidden_dim
+        self.action_embedding_dim = action_embedding_dim
         self.dropout_p = dropout_p
 
         self.gs_norms_encoder = TransformerEncoder(
             input_dim=1,
-            embedding_dim=self.gs_norms_features_hidden_dim,
+            embedding_dim=self.gs_norms_hidden_dim,
             num_heads=4,
             num_layers=3,
             dropout_p=self.dropout_p,
@@ -97,8 +98,7 @@ class ActorCritic(nn.Module):
             nn.LeakyReLU()
         )
 
-        self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
-            self.action_embedding_dim
+        self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
         self.actor_hidden_dim = 128
 
         self.actor = nn.Sequential(
@@ -122,9 +122,9 @@ class ActorCritic(nn.Module):
         )
 
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.gs_norms_features_hidden_dim + self.action_embedding_dim,
+            d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
             nhead=4,
-            dim_feedforward=4*self.gs_norms_features_hidden_dim,
+            dim_feedforward=4*self.gs_norms_hidden_dim,
             dropout=self.dropout_p,
             batch_first=True
         )
@@ -140,7 +140,9 @@ class ActorCritic(nn.Module):
             nn.Linear(self.combined_feature_dim, 1)
         )
 
-    def forward(self, tensordict: TensorDict, cached_states: Dict[str, torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, tensordict: TensorDict, 
+                cached_states: Dict[str, torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = dict()
         tensordict = self.preprocess_inputs(tensordict)
@@ -177,7 +179,10 @@ class ActorCritic(nn.Module):
         # Forward through actor and critic heads
         return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
 
-    def simulate(self, current_gs_norms: torch.Tensor, previous_action: torch.Tensor, current_action: torch.Tensor, cached_states: Dict[str, torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    def simulate(self, current_gs_norms: torch.Tensor,
+                 previous_action: torch.Tensor, current_action: torch.Tensor,
+                 cached_states: Dict[str, torch.Tensor] = None
+                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = dict()
         batch_size, basis_dim = current_gs_norms.shape
@@ -238,8 +243,7 @@ class ActorCritic(nn.Module):
                 tgt_mask=tgt_mask
             )
             # [batch_size, 1, hidden_dim]
-            current_prediction = decoder_output[:, -
-                                                1:, :self.gs_norms_features_hidden_dim]
+            current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
 
             # Project to get the norm value, tie with input projection weights
             current_prediction = current_prediction - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0)
