@@ -447,19 +447,15 @@ class PPOAgent(nn.Module):
             )
 
             # Calculate simulator losses
-            gs_norm_sim_loss = torch.nn.functional.mse_loss(
-                predicted_gs_norms, next_features["gs_norms"])
-            time_sim_loss = torch.nn.functional.mse_loss(
-                predicted_time, batch["time_taken"])
+            gs_norm_sim_loss = torch.nn.functional.mse_loss(predicted_gs_norms, next_features["gs_norms"])
+            time_sim_loss = torch.nn.functional.mse_loss(predicted_time, batch["time_taken"])
 
-            loss = actor_loss + 0.5 * critic_loss + 0.01 * \
-                entropy_loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
 
             self.optimizer.zero_grad()
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(
-                self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
+            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
             self.optimizer.step()
 
         avg_reward = rewards.mean().item()
@@ -474,8 +470,7 @@ class PPOAgent(nn.Module):
                            for k, v in state.items()}, batch_size=[])
         while not done:
             action, log_prob, _ = self.get_action(state.to(self.device))
-            next_state, reward, terminated, truncated, next_info = self.env.step(
-                action)
+            next_state, reward, terminated, truncated, next_info = self.env.step(action)
             done = terminated or truncated
 
             next_state = TensorDict({k: v.unsqueeze(0).to(self.device)
@@ -519,8 +514,7 @@ class PPOAgent(nn.Module):
                     state = TensorDict({k: v.unsqueeze(0).to(device)
                                        for k, v in state.items()}, batch_size=[])
                     action, _, _ = self.get_action(state.to(device))
-                    next_state, reward, terminated, truncated, info = self.env.step(
-                        action)
+                    next_state, reward, terminated, truncated, info = self.env.step(action)
                     log_defect_history.append(info["log_defect"])
                     shortest_length_history.append(info["shortest_length"])
                     time_history.append(info["time"])
@@ -535,8 +529,7 @@ class PPOAgent(nn.Module):
                 shortness += min(shortest_length_history)
                 success_count += min(shortest_length_history) < 1.05
                 time_taken += time_history[-1] - time_history[0]
-                length_improvement += shortest_length_history[0] - \
-                    shortest_length_history[-1]
+                length_improvement += shortest_length_history[0] - min(shortest_length_history)
 
             return {
                 "avg_reward": total_reward.item() / num_samples,
