@@ -29,7 +29,7 @@ class PositionalEncoding(nn.Module):
         Arguments:
             x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
-        x = x + self.pe[:x.size(1)]
+        x = x + self.pe[:, :x.size(1), :]
         return x
 
 
@@ -73,18 +73,21 @@ class TransformerEncoder(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1) -> None:
+    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1,
+                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8,
+                 simulator: bool = True) -> None:
         super().__init__()
+        self.simulator = simulator
         self.action_dim = action_dim
         self.max_basis_dim = max_basis_dim
 
-        self.gs_norms_features_hidden_dim = 128
-        self.action_embedding_dim = 8
+        self.gs_norms_hidden_dim = gs_norms_hidden_dim
+        self.action_embedding_dim = action_embedding_dim
         self.dropout_p = dropout_p
 
         self.gs_norms_encoder = TransformerEncoder(
             input_dim=1,
-            embedding_dim=self.gs_norms_features_hidden_dim,
+            embedding_dim=self.gs_norms_hidden_dim,
             num_heads=4,
             num_layers=3,
             dropout_p=self.dropout_p,
@@ -96,8 +99,7 @@ class ActorCritic(nn.Module):
             nn.LeakyReLU()
         )
 
-        self.combined_feature_dim = self.gs_norms_features_hidden_dim + \
-            self.action_embedding_dim
+        self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
         self.actor_hidden_dim = 128
 
         self.actor = nn.Sequential(
@@ -120,7 +122,29 @@ class ActorCritic(nn.Module):
             nn.Linear(self.actor_hidden_dim, 1),
         )
 
-    def forward(self, tensordict: TensorDict, cached_states: Dict[str, torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        if self.simulator:
+            decoder_layer = nn.TransformerDecoderLayer(
+                d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
+                nhead=4,
+                dim_feedforward=4*self.gs_norms_hidden_dim,
+                dropout=self.dropout_p,
+                batch_first=True
+            )
+            self.gs_norm_simulator = nn.TransformerDecoder(
+                decoder_layer,
+                num_layers=3
+            )
+            self.time_simulator = nn.Sequential(
+                nn.Linear(self.combined_feature_dim +
+                        self.action_embedding_dim, self.combined_feature_dim),
+                nn.LeakyReLU(),
+                nn.Dropout(p=self.dropout_p),
+                nn.Linear(self.combined_feature_dim, 1)
+            )
+
+    def forward(self, tensordict: TensorDict, 
+                cached_states: Dict[str, torch.Tensor] = None
+                ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = dict()
         tensordict = self.preprocess_inputs(tensordict)
@@ -157,6 +181,96 @@ class ActorCritic(nn.Module):
         # Forward through actor and critic heads
         return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
 
+    def simulate(self, current_gs_norms: torch.Tensor,
+                 previous_action: torch.Tensor, current_action: torch.Tensor,
+                 cached_states: Dict[str, torch.Tensor] = None
+                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        if not self.simulator:
+            raise RuntimeError("ActorCritic model not configured to simulate")
+        
+        if cached_states is None:
+            cached_states = dict()
+        batch_size, basis_dim = current_gs_norms.shape
+        device = current_gs_norms.device
+
+        if "gs_norms_embedding" in cached_states:
+            gs_norms_embedding = cached_states["gs_norms_embedding"]
+        else:
+            gs_norms_3d = current_gs_norms.unsqueeze(-1) # [batch_size, basis_dim, 1]
+            gs_norms_embedding = self.gs_norms_encoder(
+                gs_norms_3d,
+                torch.full((batch_size,), basis_dim, device=device)
+            )  # [batch_size, basis_dim, hidden_dim]
+
+        indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
+        # block size \(b\) corresponds to action id \(b - 1\)
+        if "prev_action_embedding" in cached_states:
+            prev_action_embedding = cached_states["prev_action_embedding"]
+        else:
+            previous_action_effective_block_size = torch.min(previous_action.expand(-1, basis_dim), basis_dim - indices) + 1
+            previous_action_relative_block_size = previous_action_effective_block_size / basis_dim
+            prev_action_embedding = torch.stack([previous_action_effective_block_size, previous_action_relative_block_size], dim=1)
+            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+
+        current_action_effective_block_size = torch.min(current_action.expand(-1, basis_dim), basis_dim - indices) + 1
+        current_action_relative_block_size = current_action_effective_block_size / basis_dim
+        current_action_embedding = torch.stack([current_action_effective_block_size, current_action_relative_block_size], dim=1)
+        current_action_embedding = self.action_embedding(current_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+
+        time_sim_context = torch.cat([
+            gs_norms_embedding.mean(dim=1),
+            prev_action_embedding.mean(dim=1),
+            current_action_embedding.mean(dim=1)
+        ], dim=1)
+        simulated_time = self.time_simulator(time_sim_context)
+
+        gs_norm_sim_context = torch.cat([
+            gs_norms_embedding,
+            current_action_embedding
+        ], dim=2)
+        simulated_gs_norms = torch.zeros(batch_size, basis_dim, device=device)
+        generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
+
+        for i in range(basis_dim):
+            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+            tgt = self.gs_norms_encoder.pos_encoding(tgt)
+
+            # Create causal mask for autoregressive generation
+            tgt_mask = None
+            if i > 0:
+                tgt_mask = torch.triu(torch.ones(
+                    i+1, i+1, device=device) * float('-inf'), diagonal=1)
+
+            tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
+            decoder_output = self.gs_norm_simulator(
+                tgt=tgt,
+                memory=gs_norm_sim_context,
+                tgt_mask=tgt_mask
+            )
+            # [batch_size, 1, hidden_dim]
+            current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
+
+            # Project to get the norm value, tie with input projection weights
+            current_prediction = current_prediction - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0)
+            predicted_norm = torch.nn.functional.linear(
+                current_prediction,
+                self.gs_norms_encoder.input_projection.weight.t(),
+                bias=None
+            )
+
+            simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
+
+            if i < basis_dim - 1:
+                generated_sequence = torch.cat([
+                    generated_sequence,
+                    predicted_norm.detach()
+                ], dim=1)
+
+        cached_states["gs_norms_embedding"] = gs_norms_embedding
+        cached_states["prev_action_embedding"] = prev_action_embedding
+
+        return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
+
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
@@ -182,7 +296,8 @@ class PPOConfig:
                  lr: float = 3e-4, gamma: float = 0.99,
                  gae_lambda: float = 0.95, clip_epsilon: float = 0.2,
                  clip_grad_norm: float = 0.5, epochs: int = 4,
-                 dropout_p: float = 0.2, minibatch_size: int = 64):
+                 dropout_p: float = 0.2, minibatch_size: int = 64,
+                 simulator: bool = True):
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -191,6 +306,7 @@ class PPOConfig:
         self.epochs = epochs
         self.dropout_p = dropout_p
         self.minibatch_size = minibatch_size
+        self.simulator = simulator
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 
@@ -204,7 +320,8 @@ class PPOAgent(nn.Module):
         self.actor_critic = ActorCritic(
             self.ppo_config.env_config.max_basis_dim,
             self.action_dim,
-            ppo_config.dropout_p
+            ppo_config.dropout_p,
+            simulator=self.ppo_config.simulator
         )
 
         self.mse_loss = nn.MSELoss()
@@ -223,7 +340,7 @@ class PPOAgent(nn.Module):
 
         self.env = ReductionEnvironment(self.ppo_config.env_config)
 
-    def store_transition(self, state, action, log_prob, reward, done, next_state):
+    def store_transition(self, state, action, log_prob, reward, done, next_state, time_taken):
         td = TensorDict({
             "state": {
                 "basis": state["basis"],
@@ -238,7 +355,8 @@ class PPOAgent(nn.Module):
                 "basis": next_state["basis"],
                 "last_action": next_state["last_action"],
                 "basis_dim": next_state["basis_dim"]
-            }
+            },
+            "time_taken": time_taken
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
@@ -307,6 +425,10 @@ class PPOAgent(nn.Module):
         clip_fractions = []
         approx_kls = []
 
+        if self.ppo_config.simulator:
+            gs_norm_sim_losses = []
+            time_sim_losses = []
+
         for _ in range(self.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
             dist = torch.distributions.Categorical(logits=logits)
@@ -331,6 +453,23 @@ class PPOAgent(nn.Module):
 
             loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
+            if self.ppo_config.simulator:
+                current_features = self.actor_critic.preprocess_inputs(states)
+                next_features = self.actor_critic.preprocess_inputs(next_states)
+                predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
+                    current_features["gs_norms"],
+                    current_features["last_action"],
+                    actions.float(),
+                    cached_states
+                )
+
+                # Calculate simulator losses
+                gs_norm_sim_loss = torch.nn.functional.mse_loss(predicted_gs_norms, next_features["gs_norms"])
+                time_sim_loss = torch.nn.functional.mse_loss(predicted_time, batch["time_taken"])
+
+                loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+                
+
             self.optimizer.zero_grad()
             loss.backward()
 
@@ -343,6 +482,10 @@ class PPOAgent(nn.Module):
             entropy_losses.append(entropy_loss.item())
             total_losses.append(loss.item())
 
+            if self.ppo_config.simulator:
+                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
+                time_sim_losses.append(time_sim_loss.item())
+
             clipped = (ratios < 1 - self.ppo_config.clip_epsilon) | (ratios > 1 + self.ppo_config.clip_epsilon)
             clip_fractions.append(clipped.float().mean().item())
 
@@ -350,7 +493,8 @@ class PPOAgent(nn.Module):
             approx_kls.append(approx_kl)
 
         self.replay_buffer.empty()
-        return {
+
+        metrics = {
             "update/avg_actor_loss": np.mean(actor_losses),
             "update/avg_critic_loss": np.mean(critic_losses),
             "update/avg_entropy": np.mean(entropy_losses),
@@ -359,6 +503,12 @@ class PPOAgent(nn.Module):
             "update/advantages_mean": advantages.mean().item(),
             "update/advantages_std": advantages.std().item(),
         }
+        if self.ppo_config.simulator:
+            metrics.update({
+                "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
+                "update/avg_time_sim_loss": np.mean(time_sim_losses)
+            })
+        return metrics
 
     def collect_experiences(self) -> float:
         total_reward = 0.0
@@ -366,14 +516,14 @@ class PPOAgent(nn.Module):
         total_log_prob = 0.0
         total_value = 0.0
 
-        state, _ = self.env.reset()
+        state, info = self.env.reset()
         done = False
 
         state = TensorDict({k: v.unsqueeze(0).to(self.device)
                            for k, v in state.items()}, batch_size=[])
         while not done:
             action, log_prob, value = self.get_action(state.to(self.device))
-            next_state, reward, terminated, truncated, _ = self.env.step(action)
+            next_state, reward, terminated, truncated, next_info = self.env.step(action)
             done = terminated or truncated
 
             next_state = TensorDict({k: v.unsqueeze(0).to(self.device)
@@ -384,9 +534,12 @@ class PPOAgent(nn.Module):
                 log_prob,
                 torch.tensor([reward], dtype=torch.float32).to(self.device),
                 torch.tensor([done], dtype=torch.bool).to(self.device),
-                next_state
+                next_state,
+                torch.tensor([next_info["time"] - info["time"]],
+                             dtype=torch.float32).to(self.device)
             )
             state = next_state
+            info = next_info
 
             total_reward += reward.item()
             steps += 1

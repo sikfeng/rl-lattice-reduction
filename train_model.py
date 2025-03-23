@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
     parser.add_argument("--time-limit", type=float, default=300.0)
+    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -89,7 +90,7 @@ def main():
         distribution=args.dist
     )
 
-    ppo_config = PPOConfig(env_config=env_config)
+    ppo_config = PPOConfig(env_config=env_config, simulator=args.simulator)
     agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
