@@ -74,8 +74,10 @@ class TransformerEncoder(nn.Module):
 
 class ActorCritic(nn.Module):
     def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1,
-                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8) -> None:
+                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8,
+                 simulator: bool = True) -> None:
         super().__init__()
+        self.simulator = simulator
         self.action_dim = action_dim
         self.max_basis_dim = max_basis_dim
 
@@ -120,24 +122,25 @@ class ActorCritic(nn.Module):
             nn.Linear(self.actor_hidden_dim, 1),
         )
 
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
-            nhead=4,
-            dim_feedforward=4*self.gs_norms_hidden_dim,
-            dropout=self.dropout_p,
-            batch_first=True
-        )
-        self.gs_norm_simulator = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=3
-        )
-        self.time_simulator = nn.Sequential(
-            nn.Linear(self.combined_feature_dim +
-                      self.action_embedding_dim, self.combined_feature_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=self.dropout_p),
-            nn.Linear(self.combined_feature_dim, 1)
-        )
+        if self.simulator:
+            decoder_layer = nn.TransformerDecoderLayer(
+                d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
+                nhead=4,
+                dim_feedforward=4*self.gs_norms_hidden_dim,
+                dropout=self.dropout_p,
+                batch_first=True
+            )
+            self.gs_norm_simulator = nn.TransformerDecoder(
+                decoder_layer,
+                num_layers=3
+            )
+            self.time_simulator = nn.Sequential(
+                nn.Linear(self.combined_feature_dim +
+                        self.action_embedding_dim, self.combined_feature_dim),
+                nn.LeakyReLU(),
+                nn.Dropout(p=self.dropout_p),
+                nn.Linear(self.combined_feature_dim, 1)
+            )
 
     def forward(self, tensordict: TensorDict, 
                 cached_states: Dict[str, torch.Tensor] = None
@@ -182,6 +185,9 @@ class ActorCritic(nn.Module):
                  previous_action: torch.Tensor, current_action: torch.Tensor,
                  cached_states: Dict[str, torch.Tensor] = None
                  ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        if not self.simulator:
+            raise RuntimeError("ActorCritic model not configured to simulate")
+        
         if cached_states is None:
             cached_states = dict()
         batch_size, basis_dim = current_gs_norms.shape
@@ -290,7 +296,8 @@ class PPOConfig:
                  lr: float = 3e-4, gamma: float = 0.99,
                  gae_lambda: float = 0.95, clip_epsilon: float = 0.2,
                  clip_grad_norm: float = 0.5, epochs: int = 4,
-                 dropout_p: float = 0.2, minibatch_size: int = 64):
+                 dropout_p: float = 0.2, minibatch_size: int = 64,
+                 simulator: bool = True):
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -299,6 +306,7 @@ class PPOConfig:
         self.epochs = epochs
         self.dropout_p = dropout_p
         self.minibatch_size = minibatch_size
+        self.simulator = simulator
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
 
@@ -312,7 +320,8 @@ class PPOAgent(nn.Module):
         self.actor_critic = ActorCritic(
             self.ppo_config.env_config.max_basis_dim,
             self.action_dim,
-            ppo_config.dropout_p
+            ppo_config.dropout_p,
+            simulator=self.ppo_config.simulator
         )
 
         self.mse_loss = nn.MSELoss()
@@ -416,6 +425,10 @@ class PPOAgent(nn.Module):
         clip_fractions = []
         approx_kls = []
 
+        if self.ppo_config.simulator:
+            gs_norm_sim_losses = []
+            time_sim_losses = []
+
         for _ in range(self.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
             dist = torch.distributions.Categorical(logits=logits)
@@ -437,21 +450,24 @@ class PPOAgent(nn.Module):
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
             entropy_loss = -dist.entropy().mean()
+            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
-            current_features = self.actor_critic.preprocess_inputs(states)
-            next_features = self.actor_critic.preprocess_inputs(next_states)
-            predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
-                current_features["gs_norms"],
-                current_features["last_action"],
-                actions.float(),
-                cached_states
-            )
+            if self.ppo_config.simulator:
+                current_features = self.actor_critic.preprocess_inputs(states)
+                next_features = self.actor_critic.preprocess_inputs(next_states)
+                predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
+                    current_features["gs_norms"],
+                    current_features["last_action"],
+                    actions.float(),
+                    cached_states
+                )
 
-            # Calculate simulator losses
-            gs_norm_sim_loss = torch.nn.functional.mse_loss(predicted_gs_norms, next_features["gs_norms"])
-            time_sim_loss = torch.nn.functional.mse_loss(predicted_time, batch["time_taken"])
+                # Calculate simulator losses
+                gs_norm_sim_loss = torch.nn.functional.mse_loss(predicted_gs_norms, next_features["gs_norms"])
+                time_sim_loss = torch.nn.functional.mse_loss(predicted_time, batch["time_taken"])
 
-            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+                loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+                
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -465,6 +481,10 @@ class PPOAgent(nn.Module):
             entropy_losses.append(entropy_loss.item())
             total_losses.append(loss.item())
 
+            if self.ppo_config.simulator:
+                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
+                time_sim_losses.append(time_sim_loss.item())
+
             clipped = (ratios < 1 - self.ppo_config.clip_epsilon) | (ratios > 1 + self.ppo_config.clip_epsilon)
             clip_fractions.append(clipped.float().mean().item())
 
@@ -472,7 +492,8 @@ class PPOAgent(nn.Module):
             approx_kls.append(approx_kl)
 
         self.replay_buffer.empty()
-        return {
+
+        metrics = {
             "update/avg_actor_loss": np.mean(actor_losses),
             "update/avg_critic_loss": np.mean(critic_losses),
             "update/avg_entropy": np.mean(entropy_losses),
@@ -481,6 +502,12 @@ class PPOAgent(nn.Module):
             "update/advantages_mean": advantages.mean().item(),
             "update/advantages_std": advantages.std().item(),
         }
+        if self.ppo_config.simulator:
+            metrics.update({
+                "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
+                "update/avg_time_sim_loss": np.mean(time_sim_losses)
+            })
+        return metrics
 
     def collect_experiences(self) -> float:
         total_reward = 0.0
