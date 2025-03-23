@@ -416,7 +416,7 @@ class ReductionEnvironment:
             self.terminated = True
             self.truncated = self._check_truncation()
 
-            return self._get_observation(), 0, self.terminated, self.truncated, self._get_info()
+            return self._get_observation(), torch.zeros(1), self.terminated, self.truncated, self._get_info()
         else:
             block_size = self._action_to_block(action)
             self.clean = self.bkz.tour(BKZ.EasyParam(

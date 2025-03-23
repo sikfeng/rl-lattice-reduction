@@ -1,14 +1,13 @@
 import math
-from typing import Dict, Tuple, Union
+from typing import Tuple, Union
 
+import numpy as np
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
-from tqdm import tqdm
 
 from reduction_env import ReductionEnvConfig, ReductionEnvironment
 
@@ -293,7 +292,10 @@ class PPOAgent(nn.Module):
             done=dones.unsqueeze(1)
         )
 
-        # Policy updates
+        actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
+        clip_fractions = []
+        approx_kls = []
+
         for _ in range(self.ppo_config.epochs):
             logits, values = self.actor_critic(states)
             dist = torch.distributions.Categorical(logits=logits)
@@ -311,8 +313,7 @@ class PPOAgent(nn.Module):
             \[ L(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right) \right] \]
             """
             surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.ppo_config.clip_epsilon,
-                                1 + self.ppo_config.clip_epsilon) * advantages
+            surr2 = torch.clamp(ratios, 1 - self.ppo_config.clip_epsilon,1 + self.ppo_config.clip_epsilon) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
             entropy_loss = -dist.entropy().mean()
@@ -321,24 +322,46 @@ class PPOAgent(nn.Module):
             self.optimizer.zero_grad()
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(
-                self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
+            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
             self.optimizer.step()
 
-        avg_reward = rewards.mean().item()
+            # Logging metrics
+            actor_losses.append(actor_loss.item())
+            critic_losses.append(critic_loss.item())
+            entropy_losses.append(entropy_loss.item())
+            total_losses.append(loss.item())
+
+            clipped = (ratios < 1 - self.ppo_config.clip_epsilon) | (ratios > 1 + self.ppo_config.clip_epsilon)
+            clip_fractions.append(clipped.float().mean().item())
+
+            approx_kl = (old_log_probs - new_log_probs).mean().item()
+            approx_kls.append(approx_kl)
+
         self.replay_buffer.empty()
-        return avg_reward
+        return {
+            "update/avg_actor_loss": np.mean(actor_losses),
+            "update/avg_critic_loss": np.mean(critic_losses),
+            "update/avg_entropy": np.mean(entropy_losses),
+            "update/total_loss": np.mean(total_losses),
+            "update/approx_kl": np.mean(approx_kl),
+            "update/advantages_mean": advantages.mean().item(),
+            "update/advantages_std": advantages.std().item(),
+        }
 
     def collect_experiences(self) -> float:
+        total_reward = 0.0
+        steps = 0
+        total_log_prob = 0.0
+        total_value = 0.0
+
         state, _ = self.env.reset()
         done = False
 
         state = TensorDict({k: v.unsqueeze(0).to(self.device)
                            for k, v in state.items()}, batch_size=[])
         while not done:
-            action, log_prob, _ = self.get_action(state.to(self.device))
-            next_state, reward, terminated, truncated, _ = self.env.step(
-                action)
+            action, log_prob, value = self.get_action(state.to(self.device))
+            next_state, reward, terminated, truncated, _ = self.env.step(action)
             done = terminated or truncated
 
             next_state = TensorDict({k: v.unsqueeze(0).to(self.device)
@@ -352,4 +375,14 @@ class PPOAgent(nn.Module):
                 next_state
             )
             state = next_state
-        return
+
+            total_reward += reward.item()
+            steps += 1
+            total_log_prob += log_prob.item()
+            total_value += value.item()
+        return {
+            "episode/reward": total_reward,
+            "episode/steps": steps,
+            "episode/avg_action_log_prob": total_log_prob / steps,
+            "episode/avg_value_estimate": total_value / steps,
+        }

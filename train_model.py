@@ -8,6 +8,7 @@ from fpylll import FPLLL
 import numpy as np
 import torch
 from tqdm import tqdm
+import wandb
 
 from ppo_agent import PPOAgent, PPOConfig
 from reduction_env import ReductionEnvConfig
@@ -76,6 +77,8 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
+    wandb.init(project="bkz-rl", name=f"ppo-model_dim-{args.dim}_{start_timestamp}")
+
     env_config = ReductionEnvConfig(
         max_basis_dim=args.dim,
         max_block_size=args.max_block_size,
@@ -83,7 +86,7 @@ def main():
         defect_reward_weight=args.defect_reward_weight,
         length_reward_weight=args.length_reward_weight,
         time_limit=args.time_limit,
-        distribution=args.distribution
+        distribution=args.dist
     )
 
     ppo_config = PPOConfig(env_config=env_config)
@@ -96,12 +99,15 @@ def main():
     torch.save(agent.state_dict(), checkpoint_dir / filename)
 
     agent.train()
-    for step in (tqdm(range(args.episodes), dynamic_ncols=True)):
-        agent.collect_experiences()
-        agent.update()
+    for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
+        episode_metrics = agent.collect_experiences()
+        update_metrics = agent.update()
 
-        if (step + 1) % args.chkpt_interval == 0:
-            filename = f"episodes_{step}.pth"
+        combined_metrics = {**episode_metrics, **update_metrics}
+        wandb.log(combined_metrics, step=episode)
+
+        if (episode + 1) % args.chkpt_interval == 0:
+            filename = f"episodes_{episode}.pth"
             torch.save(agent.state_dict(), checkpoint_dir / filename)
             logging.info(f"Saved to {checkpoint_dir / filename}")
 
