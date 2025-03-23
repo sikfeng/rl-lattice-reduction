@@ -453,9 +453,8 @@ class ReductionEnvironment:
             (self.shortest_length_history[-2] -
              self.shortest_length_history[-1])
 
-        # Clip final reward to prevent extreme values
         total_reward = sum(rewards.values())
-        return max(min(total_reward, 10.0), -5.0)  # Clip between -5 and 10
+        return total_reward
 
     def _check_termination(self):
         """Check if episode has terminated"""
