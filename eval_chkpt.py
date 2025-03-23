@@ -6,19 +6,73 @@ import yaml
 
 from fpylll import FPLLL
 import numpy as np
+from tensordict import TensorDict
 import torch
+from torch.utils.data import DataLoader
+import torchmetrics
+from tqdm import tqdm
 
 from ppo_agent import PPOAgent, PPOConfig
 from load_dataset import load_lattice_dataloaders
 from reduction_env import ReductionEnvConfig
 
+def evaluate(agent: PPOAgent, dataloader: DataLoader, device: torch.device):
+    agent.eval()
+    with torch.no_grad():
+        total_reward = 0.0
+        total_steps = 0
+        success_count = 0
+        shortness = 0.0
+        length_improvement = 0.0
+        time_taken = 0.0
+        num_samples = len(dataloader.dataset)
+
+        for batch in tqdm(dataloader, dynamic_ncols=True):
+            state, info = agent.env.reset(options=batch[0])
+            log_defect_history = [info["log_defect"]]
+            shortest_length_history = [info["shortest_length"]]
+            time_history = [info["time"]]
+
+            done = False
+            episode_reward = 0
+            steps = 0
+
+            while not done:
+                state = TensorDict({k: v.unsqueeze(0).to(device)
+                                    for k, v in state.items()}, batch_size=[])
+                action, _, _ = agent.get_action(state.to(device))
+                next_state, reward, terminated, truncated, info = agent.env.step(action)
+                log_defect_history.append(info["log_defect"])
+                shortest_length_history.append(info["shortest_length"])
+                time_history.append(info["time"])
+                done = terminated or truncated
+                episode_reward += reward
+                steps += 1
+                state = next_state
+
+            total_reward += episode_reward
+            total_steps += steps
+
+            shortness += min(shortest_length_history)
+            success_count += min(shortest_length_history) < 1.05
+            time_taken += time_history[-1] - time_history[0]
+            length_improvement += shortest_length_history[0] - min(shortest_length_history)
+
+        return {
+            "avg_reward": total_reward.item() / num_samples,
+            "avg_steps": total_steps / num_samples,
+            "success_rate": success_count / num_samples,
+            "avg_shortness": shortness / num_samples,
+            "avg_length_improvement": length_improvement / num_samples,
+            "avg_time": time_taken / num_samples
+        }
 
 def eval_model(agent, val_loader, test_loader, device):
-    val_metrics = agent.evaluate(val_loader, device)
+    val_metrics = evaluate(agent, val_loader, device)
     logging.info(f"Validation metrics:")
     logging.info(str(val_metrics))
 
-    test_metrics = agent.evaluate(test_loader, device)
+    test_metrics = evaluate(agent, test_loader, device)
     logging.info(f"Test metrics:")
     logging.info(str(test_metrics))
 
