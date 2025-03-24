@@ -180,7 +180,7 @@ class ActorCritic(nn.Module):
 
         actor_output = self.actor(combined) # [terminate_prob, relative_size]
         termination_probs, relative_size = actor_output[:, 0], actor_output[:, 1]
-        scaled_block_size = (1 - relative_size) * previous_action.squeeze(-1) + relative_size * basis_dim.squeeze(-1)
+        scaled_block_size = (1 - relative_size) * (previous_action.squeeze(-1) + 1) + relative_size * basis_dim.squeeze(-1)
         return termination_probs, scaled_block_size, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
@@ -371,9 +371,8 @@ class PPOAgent(nn.Module):
 
             terminate = torch.bernoulli(termination_prob).bool()
             block_size = torch.round(block_size_float).int()
-            block_size = torch.clamp(block_size, min=last_action, max=basis_dim)
-            action = block_size - 1
-            action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size)
+            block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim)
+            action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1)
 
             termination_log_probs = torch.where(
                 terminate,
@@ -575,7 +574,7 @@ class PPOAgent(nn.Module):
         state = TensorDict({k: v.unsqueeze(0).to(self.device)
                            for k, v in state.items()}, batch_size=[])
         while not done:
-            action, log_prob, value = self.get_action(state.to(self.device))
+            action, log_prob, value = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
             done = terminated or truncated
 
