@@ -25,7 +25,7 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
             logged_metrics = {f"val/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
-            logged_metrics[f"val/episode_{checkpoint_episode}"] = ep
+            logged_metrics[f"val/episode"] = ep
             wandb.log(logged_metrics)
             # Accumulate for aggregation
             for k, v in batch_metrics.items():
@@ -42,7 +42,7 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
             logged_metrics = {f"test/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
-            logged_metrics[f"test/episode_{checkpoint_episode}"] = ep
+            logged_metrics[f"test/episode"] = ep
             wandb.log(logged_metrics)
             # Accumulate for aggregation
             for k, v in batch_metrics.items():
