@@ -51,7 +51,7 @@ def main():
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
     checkpoint_dir = Path(
-        f"checkpoint/ppo-model_dim-{args.dim}_{start_timestamp}")
+        f"checkpoint/dim-{args.dim}_{start_timestamp}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -78,7 +78,7 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
-    wandb.init(project="bkz-rl", name=f"ppo-model_dim-{args.dim}_{start_timestamp}")
+    wandb.init(project="bkz-rl-training", name=f"dim-{args.dim}_{start_timestamp}")
 
     env_config = ReductionEnvConfig(
         max_basis_dim=args.dim,
