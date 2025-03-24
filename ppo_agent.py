@@ -180,7 +180,7 @@ class ActorCritic(nn.Module):
 
         actor_output = self.actor(combined) # [terminate_prob, relative_size]
         termination_probs, relative_size = actor_output[:, 0], actor_output[:, 1]
-        scaled_block_size = (1 - relative_size) * previous_action + relative_size * basis_dim
+        scaled_block_size = (1 - relative_size) * previous_action.squeeze(-1) + relative_size * basis_dim.squeeze(-1)
         return termination_probs, scaled_block_size, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
@@ -362,16 +362,6 @@ class PPOAgent(nn.Module):
         }, batch_size=[action.size(0)])
         self.replay_buffer.add(td)
 
-    def _mask_logits(self, logits, basis_dim, last_action):
-        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0)
-        thresholds = last_action.unsqueeze(1)
-        # mask entries which are False will be masked out
-        # indices >= thresholds are entries not smaller than previous block size
-        # indices <= basis_dim are entries with block size smaller than dim
-        # indices == 0 is the termination action
-        mask = ((indices >= thresholds) & (indices <= basis_dim)) | (indices == 0)
-        return logits.masked_fill(~mask, float('-inf'))
-
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
             termination_prob, block_size_float, value, _ = self.actor_critic(state)
@@ -448,25 +438,26 @@ class PPOAgent(nn.Module):
 
         for _ in range(self.ppo_config.epochs):
             term_probs, block_preds, values, cached_states = self.actor_critic(states)
+            # term_probs, block_preds, values [batch_size]
 
             # Create action masks
-            terminate_mask = (actions == 0).squeeze(1)
-            continue_mask = ~terminate_mask
+            terminate_mask = (actions == 0).squeeze(1) # [batch_size]
+            continue_mask = ~terminate_mask # [batch_size]
             
             # Calculate termination log probs (Bernoulli distribution)
             term_dist = torch.distributions.Bernoulli(probs=term_probs)
-            term_log_probs = term_dist.log_prob(terminate_mask.float())
+            term_log_probs = term_dist.log_prob(terminate_mask.float()) # [batch_size]
             
             # Calculate block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
                 loc=block_preds[continue_mask],
                 scale=1.0  # Can make scale learnable if needed
             )
-            block_log_probs = block_dist.log_prob(actions[continue_mask].float())
+            block_log_probs = block_dist.log_prob(actions[continue_mask].float().squeeze(1)) # [continue_size]
             
             # Combine log probabilities
-            new_log_probs = torch.zeros_like(old_log_probs)
-            new_log_probs[terminate_mask.unsqueeze(1)] = term_log_probs[terminate_mask]
+            new_log_probs = torch.zeros_like(old_log_probs) # [batch_size, 1]
+            new_log_probs[terminate_mask] = term_log_probs[terminate_mask].unsqueeze(1)
             if continue_mask.any():
                 # Get log P(continue) for continue actions
                 log_p_continue = term_dist.log_prob(0.0)  # [batch_size]
@@ -475,11 +466,7 @@ class PPOAgent(nn.Module):
                 # Get log P(block_size) for continue actions
                 log_p_block = block_log_probs  # [num_continue]
                 
-                # Ensure shapes match
-                assert log_p_continue.shape == log_p_block.shape, \
-                    f"Shape mismatch: {log_p_continue.shape} vs {log_p_block.shape}"
-                
-                new_log_probs[continue_mask] = log_p_continue + log_p_block
+                new_log_probs[continue_mask] = (log_p_continue + log_p_block).unsqueeze(1)
 
             r"""
             The probability ratio is 
