@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import logging
 from pathlib import Path
 import random
@@ -7,40 +8,68 @@ import yaml
 from fpylll import FPLLL
 import numpy as np
 import torch
+from tqdm import tqdm
+import wandb
 
-from eval_chkpt import eval_model
-from ppo_agent import PPOAgent, PPOConfig
+from ppo_agent import PPOAgent
 from load_dataset import load_lattice_dataloaders
-from reduction_env import ReductionEnvConfig
 
+
+def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episode: int) -> dict:
+    val_metrics = defaultdict(list)
+    test_metrics = defaultdict(list)
+
+    with torch.no_grad():
+        # Validation evaluation
+        for ep, batch in enumerate(tqdm(val_dataloader, dynamic_ncols=True)):
+            batch_metrics = agent.evaluate(batch)
+            # Log per-batch metrics
+            logged_metrics = {f"val/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
+            logged_metrics[f"val/episode_{checkpoint_episode}"] = ep
+            wandb.log(logged_metrics)
+            # Accumulate for aggregation
+            for k, v in batch_metrics.items():
+                val_metrics[k].append(v)
+        
+        # Aggregate validation metrics
+        aggregated_val = {}
+        for k in val_metrics:
+            avg = sum(val_metrics[k]) / len(val_metrics[k])
+            aggregated_val[f'avg_{k}'] = avg
+
+        # Test evaluation
+        for ep, batch in enumerate(tqdm(test_dataloader, dynamic_ncols=True)):
+            batch_metrics = agent.evaluate(batch)
+            # Log per-batch metrics
+            logged_metrics = {f"test/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
+            logged_metrics[f"test/episode_{checkpoint_episode}"] = ep
+            wandb.log(logged_metrics)
+            # Accumulate for aggregation
+            for k, v in batch_metrics.items():
+                test_metrics[k].append(v)
+        
+        # Aggregate test metrics
+        aggregated_test = {}
+        for k in test_metrics:
+            avg = sum(test_metrics[k]) / len(test_metrics[k])
+            aggregated_test[f'avg_{k}'] = avg
+
+    return {
+        'val': aggregated_val,
+        'test': aggregated_test
+    }
 
 def main():
     FPLLL.set_precision(1000)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--run-dir", type=str, required=True)
     parser.add_argument("--dim", type=int, default=32)
-    parser.add_argument("--dist", type=str, required=True,
-                        choices=["uniform", "qary", "ntrulike"])
-    parser.add_argument("--max_block_size", type=int)
-    parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
-    parser.add_argument("--defect-reward-weight", type=float, default=0.1)
-    parser.add_argument("--length-reward-weight", type=float, default=1.0)
-    parser.add_argument("--time-limit", type=float, default=300.0)
+    parser.add_argument("--run-dir", type=str, required=True)
+    parser.add_argument("--dist", type=str, required=True, choices=["uniform", "qary", "ntrulike"])
     args = parser.parse_args()
 
-    # Set default for max_block_size
-    if args.max_block_size is None:
-        args.max_block_size = args.dim
-
-    # Validation
-    if args.max_block_size > args.dim:
-        raise ValueError("max_block_size must be at most dim.")
-    if 2 > args.max_block_size:
-        raise ValueError("max_block_size cannot be less than 2.")
-
-    print(args)
+    logging.info(args)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -66,6 +95,8 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
+    wandb.init(project="bkz-rl-evaluation", name=args.run_dir)
+
     data_dir = Path("random_bases")
 
     # Create DataLoaders
@@ -78,33 +109,46 @@ def main():
         device=device
     )
 
-    # Environment and agent configuration
-    env_config = ReductionEnvConfig(
-        max_basis_dim=args.dim,
-        max_block_size=args.max_block_size,
-        time_penalty_weight=args.time_penalty_weight,
-        defect_reward_weight=args.defect_reward_weight,
-        length_reward_weight=args.length_reward_weight,
-        time_limit=args.time_limit
-    )
-
-    ppo_config = PPOConfig(env_config=env_config)
-
     run_dir = Path(args.run_dir)
+    checkpoint_files = []
+    pretrained_file = None
+
+    # Collect and sort checkpoint files
     for pth_file in run_dir.glob('*.pth'):
+        if pth_file.name == 'pretrained.pth':
+            pretrained_file = pth_file
+        else:
+            stem = pth_file.stem
+            if stem.startswith('episodes_'):
+                try:
+                    episode = int(stem.split('_')[1])
+                    checkpoint_files.append((episode, pth_file))
+                except (IndexError, ValueError):
+                    logging.warning(f"Skipping invalid file: {pth_file}")
+    checkpoint_files.sort()
+    if pretrained_file:
+        checkpoint_files = [(0, pretrained_file)] + checkpoint_files
+
+    # Process each checkpoint in order
+    for checkpoint_episode, pth_file in checkpoint_files:
         yaml_file = pth_file.with_suffix('.yaml')
         if yaml_file.exists():
             logging.info(f"Skipping {pth_file} as {yaml_file} exists.")
             continue
 
         logging.info(f"Evaluating {pth_file}...")
+
+        checkpoint = torch.load(pth_file, map_location=device, weights_only=False)
+        state_dict = checkpoint['state_dict']
+        ppo_config = checkpoint['ppo_config']
         agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
-        agent.load_state_dict(torch.load(pth_file))
+        agent.load_state_dict(state_dict)
+        agent.eval()
 
         total_params = sum(p.numel() for p in agent.parameters())
         logging.info(f"Total parameters: {total_params}")
 
-        metrics = eval_model(agent, val_loader, test_loader, device)
+        metrics = evaluate(agent, val_loader, test_loader, checkpoint_episode)
         logging.info(f"Validation metrics:")
         logging.info(str(metrics["val"]))
         logging.info(f"Test metrics:")

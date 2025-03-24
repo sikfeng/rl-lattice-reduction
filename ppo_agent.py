@@ -510,7 +510,7 @@ class PPOAgent(nn.Module):
             })
         return metrics
 
-    def collect_experiences(self) -> float:
+    def collect_experiences(self) -> Dict[str, float]:
         total_reward = 0.0
         steps = 0
         total_log_prob = 0.0
@@ -550,4 +550,37 @@ class PPOAgent(nn.Module):
             "episode/steps": steps,
             "episode/avg_action_log_prob": total_log_prob / steps,
             "episode/avg_value_estimate": total_value / steps,
+        }
+
+    def evaluate(self, batch: TensorDict) -> Dict:
+        self.eval()
+        state, info = self.env.reset(options=batch[0])
+        log_defect_history = [info["log_defect"]]
+        shortest_length_history = [info["shortest_length"]]
+        time_history = [info["time"]]
+
+        done = False
+        episode_reward = 0
+        steps = 0
+
+        while not done:
+            state = TensorDict({k: v.unsqueeze(0).to(self.device)
+                                for k, v in state.items()}, batch_size=[])
+            action, _, _ = self.get_action(state)
+            next_state, reward, terminated, truncated, info = self.env.step(action)
+            log_defect_history.append(info["log_defect"])
+            shortest_length_history.append(info["shortest_length"])
+            time_history.append(info["time"])
+            done = terminated or truncated
+            episode_reward += reward.item()
+            steps += 1
+            state = next_state
+
+        return {
+            "reward": episode_reward,
+            "steps": steps,
+            "shortest_length": min(shortest_length_history),
+            "success": min(shortest_length_history) < 1.05,
+            "time": time_history[-1] - time_history[0],
+            "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
