@@ -96,12 +96,7 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    filename = f"pretrained.pth"
-    checkpoint = {
-        'state_dict': agent.state_dict(),
-        'ppo_config': agent.ppo_config,
-    }
-    torch.save(checkpoint, checkpoint_dir / filename)
+    agent.save("pretrained.pth")
 
     agent.train()
     for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
@@ -112,13 +107,7 @@ def main():
         wandb.log(combined_metrics, step=episode)
 
         if (episode + 1) % args.chkpt_interval == 0:
-            filename = f"episodes_{episode}.pth"
-            checkpoint = {
-                'state_dict': agent.state_dict(),
-                'ppo_config': agent.ppo_config,
-            }
-            torch.save(checkpoint, checkpoint_dir / filename)
-            logging.info(f"Saved to {checkpoint_dir / filename}")
+            agent.save(f"episodes_{episode}.pth")
 
 
 if __name__ == "__main__":
