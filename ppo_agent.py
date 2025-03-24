@@ -109,8 +109,8 @@ class ActorCritic(nn.Module):
             nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, action_dim),
-            nn.Softmax(dim=-1)
+            nn.Linear(self.actor_hidden_dim, 2),
+            nn.Sigmoid()
         )
         self.critic = nn.Sequential(
             nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
@@ -178,8 +178,10 @@ class ActorCritic(nn.Module):
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
 
-        # Forward through actor and critic heads
-        return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
+        actor_output = self.actor(combined) # [terminate_prob, relative_size]
+        termination_probs, relative_size = actor_output[:, 0], actor_output[:, 1]
+        scaled_block_size = (1 - relative_size) * previous_action + relative_size * basis_dim
+        return termination_probs, scaled_block_size, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
                  previous_action: torch.Tensor, current_action: torch.Tensor,
@@ -372,14 +374,28 @@ class PPOAgent(nn.Module):
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
-            logits, value, _ = self.actor_critic(state)
+            termination_prob, block_size_float, value, _ = self.actor_critic(state)
 
-        masked_logits = self._mask_logits(logits, state["basis_dim"], state["last_action"])
+            basis_dim = state["basis_dim"]
+            last_action = state["last_action"]
 
-        dist = torch.distributions.Categorical(logits=masked_logits)
-        action = dist.sample()
+            terminate = torch.bernoulli(termination_prob).bool()
+            block_size = torch.round(block_size_float).int()
+            block_size = torch.clamp(block_size, min=last_action, max=basis_dim)
+            action = block_size - 1
+            action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size)
 
-        return action, dist.log_prob(action), value
+            termination_log_probs = torch.where(
+                terminate,
+                torch.log(termination_prob + 1e-8),
+                torch.log(1 - termination_prob + 1e-8)
+            )
+            dist = torch.distributions.Normal(block_size_float, 1.0)
+
+            block_size_log_probs = dist.log_prob(block_size.float())
+            log_probs = termination_log_probs + (1 - terminate.float()) * block_size_log_probs
+
+        return action, log_probs, value
 
     def update(self) -> None:
         if len(self.replay_buffer) < self.ppo_config.minibatch_size:
@@ -409,8 +425,8 @@ class PPOAgent(nn.Module):
             The computed `values` and `next_values` are used to calculate the temporal-difference 
             errors (deltas), which are the building blocks for GAE.
             """
-            _, values, _ = self.actor_critic(states)
-            _, next_values, _ = self.actor_critic(next_states)
+            _, _, values, _ = self.actor_critic(states)
+            _, _, next_values, _ = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.ppo_config.gamma,
@@ -422,6 +438,7 @@ class PPOAgent(nn.Module):
         )
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
+        term_losses, block_losses = [], []
         clip_fractions = []
         approx_kls = []
 
@@ -430,9 +447,39 @@ class PPOAgent(nn.Module):
             time_sim_losses = []
 
         for _ in range(self.ppo_config.epochs):
-            logits, values, cached_states = self.actor_critic(states)
-            dist = torch.distributions.Categorical(logits=logits)
-            new_log_probs = dist.log_prob(actions)
+            term_probs, block_preds, values, cached_states = self.actor_critic(states)
+
+            # Create action masks
+            terminate_mask = (actions == 0).squeeze(1)
+            continue_mask = ~terminate_mask
+            
+            # Calculate termination log probs (Bernoulli distribution)
+            term_dist = torch.distributions.Bernoulli(probs=term_probs)
+            term_log_probs = term_dist.log_prob(terminate_mask.float())
+            
+            # Calculate block size log probs (Normal distribution)
+            block_dist = torch.distributions.Normal(
+                loc=block_preds[continue_mask],
+                scale=1.0  # Can make scale learnable if needed
+            )
+            block_log_probs = block_dist.log_prob(actions[continue_mask].float())
+            
+            # Combine log probabilities
+            new_log_probs = torch.zeros_like(old_log_probs)
+            new_log_probs[terminate_mask.unsqueeze(1)] = term_log_probs[terminate_mask]
+            if continue_mask.any():
+                # Get log P(continue) for continue actions
+                log_p_continue = term_dist.log_prob(0.0)  # [batch_size]
+                log_p_continue = log_p_continue[continue_mask]  # [num_continue]
+                
+                # Get log P(block_size) for continue actions
+                log_p_block = block_log_probs  # [num_continue]
+                
+                # Ensure shapes match
+                assert log_p_continue.shape == log_p_block.shape, \
+                    f"Shape mismatch: {log_p_continue.shape} vs {log_p_block.shape}"
+                
+                new_log_probs[continue_mask] = log_p_continue + log_p_block
 
             r"""
             The probability ratio is 
@@ -449,7 +496,21 @@ class PPOAgent(nn.Module):
             surr2 = torch.clamp(ratios, 1 - self.ppo_config.clip_epsilon,1 + self.ppo_config.clip_epsilon) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
-            entropy_loss = -dist.entropy().mean()
+            term_entropy = term_dist.entropy().mean()
+            block_entropy = block_dist.entropy().mean() if continue_mask.any() else 0.0
+            entropy_loss = -(term_entropy + block_entropy)
+            
+            with torch.no_grad():
+                term_loss = -torch.min(
+                    surr1[terminate_mask],
+                    surr2[terminate_mask]
+                ).mean() if terminate_mask.any() else torch.tensor(0.0)
+                
+                # Block size component loss
+                block_loss = -torch.min(
+                    surr1[continue_mask],
+                    surr2[continue_mask]
+                ).mean() if continue_mask.any() else torch.tensor(0.0)
 
             loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
@@ -481,6 +542,9 @@ class PPOAgent(nn.Module):
             critic_losses.append(critic_loss.item())
             entropy_losses.append(entropy_loss.item())
             total_losses.append(loss.item())
+            
+            term_losses.append(term_loss.item())
+            block_losses.append(block_loss.item())
 
             if self.ppo_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
@@ -497,6 +561,8 @@ class PPOAgent(nn.Module):
         metrics = {
             "update/avg_actor_loss": np.mean(actor_losses),
             "update/avg_critic_loss": np.mean(critic_losses),
+            "update/avg_term_loss": np.mean(term_losses),
+            "update/avg_block_loss": np.mean(block_losses),
             "update/avg_entropy": np.mean(entropy_losses),
             "update/total_loss": np.mean(total_losses),
             "update/approx_kl": np.mean(approx_kl),
