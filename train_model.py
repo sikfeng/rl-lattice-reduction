@@ -97,7 +97,11 @@ def main():
     logging.info(f"Total parameters: {total_params}")
 
     filename = f"pretrained.pth"
-    torch.save(agent.state_dict(), checkpoint_dir / filename)
+    checkpoint = {
+        'state_dict': agent.state_dict(),
+        'ppo_config': agent.ppo_config,
+    }
+    torch.save(checkpoint, checkpoint_dir / filename)
 
     agent.train()
     for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
@@ -109,7 +113,11 @@ def main():
 
         if (episode + 1) % args.chkpt_interval == 0:
             filename = f"episodes_{episode}.pth"
-            torch.save(agent.state_dict(), checkpoint_dir / filename)
+            checkpoint = {
+                'state_dict': agent.state_dict(),
+                'ppo_config': agent.ppo_config,
+            }
+            torch.save(checkpoint, checkpoint_dir / filename)
             logging.info(f"Saved to {checkpoint_dir / filename}")
 
 
