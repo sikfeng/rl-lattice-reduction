@@ -580,7 +580,7 @@ class PPOAgent(nn.Module):
             "reward": episode_reward,
             "steps": steps,
             "shortest_length": min(shortest_length_history),
-            "success": min(shortest_length_history) < 1.05,
+            "success": float(min(shortest_length_history) < 1.05),
             "time": time_history[-1] - time_history[0],
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
