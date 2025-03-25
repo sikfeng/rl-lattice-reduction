@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--defect-reward-weight", type=float, default=0.1)
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
     parser.add_argument("--time-limit", type=float, default=300.0)
-    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
 
     # Set default for max_block_size
