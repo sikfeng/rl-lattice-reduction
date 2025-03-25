@@ -146,7 +146,7 @@ def main():
         checkpoint = torch.load(pth_file, map_location=device, weights_only=False)
         state_dict = checkpoint['state_dict']
         ppo_config = checkpoint['ppo_config']
-        agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
+        agent = PPOAgent(ppo_config=ppo_config, device=device, batch_size=1).to(device)
         agent.load_state_dict(state_dict)
         agent.eval()
 

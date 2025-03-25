@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--length-reward-weight", type=float, default=1.0)
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--batch-size", type=int, default=1)
     args = parser.parse_args()
 
     # Set default for max_block_size
@@ -87,16 +88,17 @@ def main():
         defect_reward_weight=args.defect_reward_weight,
         length_reward_weight=args.length_reward_weight,
         time_limit=args.time_limit,
-        distribution=args.dist
+        distribution=args.dist,
+        batch_size=args.batch_size,
     )
 
     ppo_config = PPOConfig(env_config=env_config, simulator=args.simulator)
-    agent = PPOAgent(ppo_config=ppo_config, device=device).to(device)
+    agent = PPOAgent(ppo_config=ppo_config, device=device, batch_size=args.batch_size).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    agent.save("pretrained.pth")
+    agent.save(checkpoint_dir / "pretrained.pth")
 
     agent.train()
     for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
@@ -107,7 +109,7 @@ def main():
         wandb.log(combined_metrics, step=episode)
 
         if (episode + 1) % args.chkpt_interval == 0:
-            agent.save(f"episodes_{episode}.pth")
+            agent.save(checkpoint_dir / f"episodes_{episode}.pth")
 
 
 if __name__ == "__main__":

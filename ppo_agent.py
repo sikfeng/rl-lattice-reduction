@@ -10,7 +10,7 @@ import torch.optim as optim
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
-from reduction_env import ReductionEnvConfig, ReductionEnvironment
+from reduction_env import ReductionEnvConfig, ReductionEnvironment, VectorizedReductionEnvironment
 
 
 class PositionalEncoding(nn.Module):
@@ -160,13 +160,18 @@ class ActorCritic(nn.Module):
             gs_norms_reshaped = gs_norms.unsqueeze(-1)
             gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
 
-        indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
         # block size \(b\) corresponds to action id \(b - 1\)
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
         else:
-            previous_effective_block_size = torch.min(previous_action.expand(-1, self.max_basis_dim), basis_dim - indices) + 1
-            previous_relative_block_size = previous_effective_block_size / basis_dim
+            indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
+            indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
+            basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
+            previous_effective_block_size = torch.min(
+                previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
+                basis_dim_ - indices
+            ) + 1
+            previous_relative_block_size = previous_effective_block_size / basis_dim_
             prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
             prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
 
@@ -313,7 +318,9 @@ class PPOConfig:
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, ppo_config: PPOConfig, device: Union[torch.device, str]) -> None:
+    def __init__(self, ppo_config: PPOConfig,
+                 device: Union[torch.device, str],
+                 batch_size: int) -> None:
         super().__init__()
         self.ppo_config = ppo_config
         self.device = device
@@ -328,7 +335,9 @@ class PPOAgent(nn.Module):
 
         self.mse_loss = nn.MSELoss()
         self.optimizer = optim.AdamW(
-            self.actor_critic.parameters(), lr=ppo_config.lr)
+            self.actor_critic.parameters(),
+            lr=ppo_config.lr
+        )
 
         def sample_transform(tensordict: TensorDict) -> TensorDict:
             tensordict = TensorDict(
@@ -340,7 +349,11 @@ class PPOAgent(nn.Module):
             transform=sample_transform
         )
 
-        self.env = ReductionEnvironment(self.ppo_config.env_config)
+        self.batch_size = batch_size
+        self.env = VectorizedReductionEnvironment(self.ppo_config.env_config)
+        self.state, self.info = self.env.reset()
+        self.state = TensorDict(self.state, batch_size=[]).to(self.device)
+
 
     def store_transition(self, state, action, log_prob, reward, done, next_state, time_taken):
         td = TensorDict({
@@ -360,22 +373,25 @@ class PPOAgent(nn.Module):
             },
             "time_taken": time_taken
         }, batch_size=[action.size(0)])
-        self.replay_buffer.add(td)
+        self.replay_buffer.extend(list(td.split([1 for _ in range(td.batch_size[0])], dim=0)))
 
     def _mask_logits(self, logits, basis_dim, last_action):
-        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0)
-        thresholds = last_action.unsqueeze(1)
+        # logits [batch_size, action_dim]
+        # basis_dim [batch_size]
+        # last_action [batch_size]
+        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0).expand_as(logits)
+        thresholds = last_action.unsqueeze(1).expand_as(logits)
+        basis_dim_ = basis_dim.unsqueeze(1).expand_as(logits)
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
         # indices == 0 is the termination action
-        mask = ((indices >= thresholds) & (indices <= basis_dim)) | (indices == 0)
+        mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0) # [batch_size, action_dim]
         return logits.masked_fill(~mask, float('-inf'))
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
             logits, value, _ = self.actor_critic(state)
-
         masked_logits = self._mask_logits(logits, state["basis_dim"], state["last_action"])
 
         dist = torch.distributions.Categorical(logits=masked_logits)
@@ -516,45 +532,28 @@ class PPOAgent(nn.Module):
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
-        total_reward = 0.0
-        steps = 0
-        total_log_prob = 0.0
-        total_value = 0.0
+        action, log_prob, value = self.get_action(self.state)
+        next_state, reward, terminated, truncated, next_info = self.env.step(action)
+        done = terminated | truncated
 
-        state, info = self.env.reset()
-        done = False
+        next_state = TensorDict({k: v.to(self.device)
+                                for k, v in next_state.items()}, batch_size=[])
+        self.store_transition(
+            self.state,
+            action,
+            log_prob,
+            reward,
+            done,
+            next_state,
+            next_info["time"] - self.info["time"],
+        )
+        self.state = next_state
+        self.info = next_info
 
-        state = TensorDict({k: v.unsqueeze(0).to(self.device)
-                           for k, v in state.items()}, batch_size=[])
-        while not done:
-            action, log_prob, value = self.get_action(state.to(self.device))
-            next_state, reward, terminated, truncated, next_info = self.env.step(action)
-            done = terminated or truncated
-
-            next_state = TensorDict({k: v.unsqueeze(0).to(self.device)
-                                    for k, v in next_state.items()}, batch_size=[])
-            self.store_transition(
-                state,
-                action,
-                log_prob,
-                torch.tensor([reward], dtype=torch.float32).to(self.device),
-                torch.tensor([done], dtype=torch.bool).to(self.device),
-                next_state,
-                torch.tensor([next_info["time"] - info["time"]],
-                             dtype=torch.float32).to(self.device)
-            )
-            state = next_state
-            info = next_info
-
-            total_reward += reward.item()
-            steps += 1
-            total_log_prob += log_prob.item()
-            total_value += value.item()
         return {
-            "episode/reward": total_reward,
-            "episode/steps": steps,
-            "episode/avg_action_log_prob": total_log_prob / steps,
-            "episode/avg_value_estimate": total_value / steps,
+            "episode/reward": reward.sum(),
+            "episode/avg_action_log_prob": log_prob.sum().item(),
+            "episode/avg_value_estimate": value.sum().item(),
         }
 
     def evaluate(self, batch: TensorDict) -> Dict:
