@@ -262,7 +262,8 @@ class ActorCritic(nn.Module):
             current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
 
             # Project to get the norm value, tie with input projection weights
-            current_prediction = current_prediction - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0)
+            current_prediction = (current_prediction
+                                  - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
             predicted_norm = torch.nn.functional.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
@@ -523,16 +524,18 @@ class PPOAgent(nn.Module):
                 )
 
                 # Calculate simulator losses
-                gs_norm_sim_loss = torch.nn.functional.mse_loss(predicted_gs_norms, next_features["gs_norms"])
-                time_sim_loss = torch.nn.functional.mse_loss(predicted_time, batch["time_taken"])
+                gs_norm_sim_loss = self.mse_loss(predicted_gs_norms, next_features["gs_norms"])
+                time_sim_loss = self.mse_loss(predicted_time, batch["time_taken"])
 
                 loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
-                
 
             self.optimizer.zero_grad()
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.ppo_config.clip_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                self.actor_critic.parameters(),
+                self.ppo_config.clip_grad_norm
+            )
             self.optimizer.step()
 
             # Logging metrics
@@ -548,7 +551,8 @@ class PPOAgent(nn.Module):
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
 
-            clipped = (ratios < 1 - self.ppo_config.clip_epsilon) | (ratios > 1 + self.ppo_config.clip_epsilon)
+            clipped = ((ratios < 1 - self.ppo_config.clip_epsilon)
+                       | (ratios > 1 + self.ppo_config.clip_epsilon))
             clip_fractions.append(clipped.float().mean().item())
 
             approx_kl = (old_log_probs - new_log_probs).mean().item()
