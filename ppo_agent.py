@@ -100,9 +100,13 @@ class ActorCritic(nn.Module):
             nn.LeakyReLU()
         )
 
+        self.log_std = nn.Parameter(torch.zeros(1))
+
         self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
         self.actor_hidden_dim = 128
 
+        # first output logit represents termination probability
+        # second output logit represents block size
         self.actor = nn.Sequential(
             nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
@@ -143,6 +147,9 @@ class ActorCritic(nn.Module):
                 nn.Linear(self.combined_feature_dim, 1)
             )
 
+    def get_std(self) -> torch.Tensor:
+        return torch.exp(self.log_std)
+
     def forward(self, tensordict: TensorDict, 
                 cached_states: Dict[str, torch.Tensor] = None
                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
@@ -181,6 +188,7 @@ class ActorCritic(nn.Module):
 
         actor_output = self.actor(combined) # [terminate_prob, relative_size]
         termination_probs, relative_size = actor_output[:, 0], actor_output[:, 1]
+        # scale sigmoid output in (0, 1) to allowed block sizes (prev_action + 1, basis_dim)
         scaled_block_size = (1 - relative_size) * (previous_action.squeeze(-1) + 1) + relative_size * basis_dim.squeeze(-1)
         return termination_probs, scaled_block_size, self.critic(combined).squeeze(-1), cached_states
 
@@ -189,7 +197,7 @@ class ActorCritic(nn.Module):
                  cached_states: Dict[str, torch.Tensor] = None
                  ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if not self.simulator:
-            raise RuntimeError("ActorCritic model not configured to simulate")
+            raise RuntimeError("ActorCritic model not initialized to simulate.")
         
         if cached_states is None:
             cached_states = dict()
@@ -371,16 +379,19 @@ class PPOAgent(nn.Module):
             last_action = state["last_action"]
 
             terminate = torch.bernoulli(termination_prob).bool()
-            block_size = torch.round(block_size_float).int()
-            block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim)
-            action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1)
+            block_size = torch.round(block_size_float).int() # block sizes are integers
+            block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim) # ensure block size is within valid range
+            action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
 
             termination_log_probs = torch.where(
                 terminate,
                 torch.log(termination_prob + 1e-8),
                 torch.log(1 - termination_prob + 1e-8)
             )
-            dist = torch.distributions.Normal(block_size_float, 1.0)
+            dist = torch.distributions.Normal(
+                block_size_float,
+                self.actor_critic.get_std().expand_as(block_size_float)
+            )
 
             block_size_log_probs = dist.log_prob(block_size.float())
             log_probs = termination_log_probs + (1 - terminate.float()) * block_size_log_probs
@@ -451,7 +462,7 @@ class PPOAgent(nn.Module):
             # Calculate block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
                 loc=block_preds[continue_mask],
-                scale=1.0  # Can make scale learnable if needed
+                scale=self.actor_critic.get_std().expand_as(block_preds[continue_mask])
             )
             block_log_probs = block_dist.log_prob(actions[continue_mask].float().squeeze(1)) # [continue_size]
             
