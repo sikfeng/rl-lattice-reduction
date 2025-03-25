@@ -21,7 +21,9 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
 
     with torch.no_grad():
         # Validation evaluation
-        for ep, batch in enumerate(tqdm(val_dataloader, dynamic_ncols=True)):
+        for ep, batch in enumerate(tqdm(val_dataloader, 
+                                        dynamic_ncols=True, 
+                                        desc=f"Validating Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
             logged_metrics = {f"val/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
@@ -38,7 +40,9 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             aggregated_val[f'avg_{k}'] = avg
 
         # Test evaluation
-        for ep, batch in enumerate(tqdm(test_dataloader, dynamic_ncols=True)):
+        for ep, batch in enumerate(tqdm(test_dataloader, 
+                                        dynamic_ncols=True, 
+                                        desc=f"Testing Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
             logged_metrics = {f"test/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
