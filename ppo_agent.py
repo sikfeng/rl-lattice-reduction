@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 from typing import Dict, Tuple, Union
 
 import numpy as np
@@ -636,3 +637,11 @@ class PPOAgent(nn.Module):
             "time": time_history[-1] - time_history[0],
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
+    
+    def save(self, path: Path):
+        checkpoint = {
+            'state_dict': self.state_dict(),
+            'ppo_config': self.ppo_config,
+        }
+        torch.save(checkpoint, path)
+        return
