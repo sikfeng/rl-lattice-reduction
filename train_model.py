@@ -96,7 +96,7 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    agent.save("pretrained.pth")
+    agent.save(checkpoint_dir / "pretrained.pth")
 
     agent.train()
     for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
@@ -107,7 +107,7 @@ def main():
         wandb.log(combined_metrics, step=episode)
 
         if (episode + 1) % args.chkpt_interval == 0:
-            agent.save(f"episodes_{episode}.pth")
+            agent.save(checkpoint_dir / f"episodes_{episode}.pth")
 
 
 if __name__ == "__main__":
