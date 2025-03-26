@@ -54,29 +54,15 @@ class LatticeBaseDataset(Dataset):
         return tensor_sample
 
 
-def load_lattice_dataloader(data_dir, dimension, distribution_type,
-                            split='train', batch_size=32, shuffle=True,
-                            num_workers=0, transform=None, device=None):
-    """
-    Create a DataLoader for lattice basis datasets using pathlib for path handling.
-
-    Args:
-        data_dir (str or Path): Directory containing the dataset files
-        dimension (int): Dimension of the lattice bases
-        distribution_type (str): Type of distribution used to generate the bases
-                                (e.g., 'uniform', 'exponential', 'convex', 'ajtai')
-        split (str): Dataset split to load ('train', 'val', or 'test')
-        batch_size (int): Batch size for the DataLoader
-        shuffle (bool): Whether to shuffle the dataset
-        num_workers (int): Number of worker processes for data loading
-        transform (callable, optional): Transform to apply to the data
-        device (torch.device, optional): Device to load the tensors to
-
-    Returns:
-        DataLoader: PyTorch DataLoader for the specified dataset
-    """
-    file_path = Path(data_dir) / \
-        f"dim_{dimension}_type_{distribution_type}_{split}.npy"
+def load_lattice_dataloader(data_dir,
+                            dimension,
+                            distribution_type,
+                            batch_size=32,
+                            shuffle=True,
+                            num_workers=0,
+                            transform=None,
+                            device=None):
+    file_path = Path(data_dir) / f"dim_{dimension}_type_{distribution_type}.npy"
 
     if not file_path.exists():
         raise FileNotFoundError(f"Dataset file not found: {file_path}")
@@ -92,20 +78,3 @@ def load_lattice_dataloader(data_dir, dimension, distribution_type,
         pin_memory=(device is not None and device.type == 'cuda'),
         collate_fn=TensorDict.stack  # Stack TensorDicts into batches
     )
-
-
-def load_lattice_dataloaders(data_dir, dimension, distribution_type,
-                             batch_size=32, shuffle=True, num_workers=0,
-                             transform=None, device=None):
-    val_dataloader = load_lattice_dataloader(data_dir=data_dir, dimension=dimension,
-                                             distribution_type=distribution_type,
-                                             split="val", batch_size=batch_size,
-                                             shuffle=shuffle, num_workers=num_workers,
-                                             transform=transform, device=device)
-    test_dataloader = load_lattice_dataloader(data_dir=data_dir, dimension=dimension,
-                                              distribution_type=distribution_type,
-                                              split="test", batch_size=batch_size,
-                                              shuffle=shuffle, num_workers=num_workers,
-                                              transform=transform, device=device)
-
-    return val_dataloader, test_dataloader

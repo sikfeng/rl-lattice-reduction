@@ -4,7 +4,7 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 
-import fpylll
+from fpylll import FPYLLL
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
@@ -49,7 +49,8 @@ def log_defect(basis):
         basis (numpy.ndarray): The input basis matrix as a 2-dimensional numpy array.
 
     Returns:
-        float: The logarithm of the orthogonality defect of the basis matrix. If the determinant of the basis matrix is zero, returns infinity.
+        float: The logarithm of the orthogonality defect of the basis matrix.
+        If the determinant of the basis matrix is zero, returns infinity.
     """
     # Compute the product of the Euclidean norms of the basis vectors.
     log_prod_norms = np.sum(np.log(np.linalg.norm(basis, axis=1)))
@@ -76,7 +77,7 @@ def gaussian_heuristic(basis: np.ndarray):
     gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
 
     # Calculate the Gaussian Heuristic
-    gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
+    gh_squared = FPYLLL.gaussian_heuristic(gs_norms_squared)
 
     return math.sqrt(gh_squared)
 
@@ -141,10 +142,6 @@ def func(_, n, distribution):
             # Calculate Gaussian heuristic
             gh = gaussian_heuristic(basis)
 
-            # Calculate shortest vector and its length
-            # shortest_vector = svp(basis)
-            # shortest_vector_length = np.linalg.norm(shortest_vector)
-
             # Store all the data
             return {
                 "basis": basis,
@@ -152,7 +149,6 @@ def func(_, n, distribution):
                 "original_log_defect": original_log_defect,
                 "lll_log_defect": defect,
                 "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
-                # "shortest_vector_length": shortest_vector_length,
                 "gaussian_heuristic": gh,
             }
         except (ReductionError, ValueError, RuntimeError) as e:
@@ -164,28 +160,27 @@ def main():
     parser = argparse.ArgumentParser(description="Generate random basis")
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str, choices=distributions)
-    parser.add_argument("--train-samples", type=int, default=10_000)
-    parser.add_argument("--val-samples", type=int, default=1_000)
-    parser.add_argument("--test-samples", type=int, default=1_000)
+    parser.add_argument("--samples", type=int, default=1_000)
     parser.add_argument("--processes", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
     # Create the output directory using pathlib
     output_dir = Path("random_bases")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    data_files = ['train', 'val', 'test']
-    num_samples = [args.train_samples, args.val_samples, args.test_samples]
-
     worker = partial(func, n=args.dim, distribution=args.distribution)
-    np.random.seed(0)
-    for data_type, num_sample in zip(data_files, num_samples):
-        with mp.Pool(args.processes) as pool:
-            data = list(tqdm(pool.imap(worker, range(
-                num_sample)), desc=f"Generating {data_type}, dim {args.dim}, {args.distribution} distribution", dynamic_ncols=True, total=num_sample))
-        filename = f"random_bases/dim_{args.dim}_type_{args.distribution}_{data_type}.npy"
-        np.save(filename, data)
-        print(f"Saved {filename}")
+    np.random.seed(args.seed)
+    with mp.Pool(args.processes) as pool:
+        data = list(tqdm(
+            pool.imap(worker,range(args.samples)),
+            desc=f"Generating dim {args.dim}, {args.distribution} distribution",
+            dynamic_ncols=True,
+            total=args.samples))
+
+    filename = f"random_bases/dim_{args.dim}_type_{args.distribution}.npy"
+    np.save(filename, data)
+    print(f"Saved {filename}")
 
 
 if __name__ == "__main__":
