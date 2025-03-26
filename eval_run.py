@@ -12,56 +12,35 @@ from tqdm import tqdm
 import wandb
 
 from agent import Agent
-from load_dataset import load_lattice_dataloaders
+from load_dataset import load_lattice_dataloader
 
 
-def evaluate(agent: Agent, val_dataloader, test_dataloader, checkpoint_episode: int) -> dict:
+def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> dict:
     val_metrics = defaultdict(list)
-    test_metrics = defaultdict(list)
 
     with torch.no_grad():
-        # Validation evaluation
         for ep, batch in enumerate(tqdm(val_dataloader,
                                         dynamic_ncols=True,
                                         desc=f"Validating Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
             logged_metrics = {f"val/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
-            logged_metrics[f"val/episode"] = ep
+            logged_metrics["episode"] = ep
             wandb.log(logged_metrics)
             # Accumulate for aggregation
             for k, v in batch_metrics.items():
                 val_metrics[k].append(v)
 
         # Aggregate validation metrics
-        aggregated_val = {}
+        aggregated_val = {"checkpoint_episode": checkpoint_episode}
         for k in val_metrics:
             avg = sum(val_metrics[k]) / len(val_metrics[k])
             aggregated_val[f'avg_{k}'] = avg
+        logged_metrics = {f"val/{k}": v for k, v in aggregated_val.items()}
+        logged_metrics["checkpoint_episode"] = ep
+        wandb.log(logged_metrics)
 
-        # Test evaluation
-        for ep, batch in enumerate(tqdm(test_dataloader,
-                                        dynamic_ncols=True,
-                                        desc=f"Testing Checkpoint {checkpoint_episode}")):
-            batch_metrics = agent.evaluate(batch)
-            # Log per-batch metrics
-            logged_metrics = {f"test/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
-            logged_metrics[f"test/episode"] = ep
-            wandb.log(logged_metrics)
-            # Accumulate for aggregation
-            for k, v in batch_metrics.items():
-                test_metrics[k].append(v)
-
-        # Aggregate test metrics
-        aggregated_test = {}
-        for k in test_metrics:
-            avg = sum(test_metrics[k]) / len(test_metrics[k])
-            aggregated_test[f'avg_{k}'] = avg
-
-    return {
-        'val': aggregated_val,
-        'test': aggregated_test
-    }
+    return aggregated_val
 
 def main():
     FPLLL.set_precision(1000)
@@ -105,7 +84,7 @@ def main():
     data_dir = Path("random_bases")
 
     # Create DataLoaders
-    val_loader, test_loader = load_lattice_dataloaders(
+    val_loader = load_lattice_dataloader(
         data_dir=data_dir,
         dimension=args.dim,
         distribution_type=args.dist,
@@ -155,11 +134,9 @@ def main():
         total_params = sum(p.numel() for p in agent.parameters())
         logging.info(f"Total parameters: {total_params}")
 
-        metrics = evaluate(agent, val_loader, test_loader, checkpoint_episode)
+        metrics = evaluate(agent, val_loader, checkpoint_episode)
         logging.info(f"Validation metrics:")
-        logging.info(str(metrics["val"]))
-        logging.info(f"Test metrics:")
-        logging.info(str(metrics["test"]))
+        logging.info(str(metrics))
 
         with open(yaml_file, "w") as f:
             yaml.safe_dump(metrics, f, sort_keys=False)
