@@ -350,6 +350,7 @@ class PPOAgent(nn.Module):
         )
 
         self.batch_size = batch_size
+        self.ppo_config.env_config.batch_size = self.batch_size
         self.env = VectorizedReductionEnvironment(self.ppo_config.env_config)
         self.state, self.info = self.env.reset()
         self.state = TensorDict(self.state, batch_size=[]).to(self.device)
@@ -558,23 +559,22 @@ class PPOAgent(nn.Module):
 
     def evaluate(self, batch: TensorDict) -> Dict:
         self.eval()
-        state, info = self.env.reset(options=batch[0])
-        log_defect_history = [info["log_defect"]]
-        shortest_length_history = [info["shortest_length"]]
-        time_history = [info["time"]]
+        state, info = self.env.reset(options=batch)
+        log_defect_history = [info["log_defect"].item()]
+        shortest_length_history = [info["shortest_length"].item()]
+        time_history = [info["time"].item()]
 
         done = False
         episode_reward = 0
         steps = 0
 
         while not done:
-            state = TensorDict({k: v.unsqueeze(0).to(self.device)
-                                for k, v in state.items()}, batch_size=[])
+            state = state.to(self.device)
             action, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, info = self.env.step(action)
-            log_defect_history.append(info["log_defect"])
-            shortest_length_history.append(info["shortest_length"])
-            time_history.append(info["time"])
+            log_defect_history.append(info["log_defect"].item())
+            shortest_length_history.append(info["shortest_length"].item())
+            time_history.append(info["time"].item())
             done = terminated or truncated
             episode_reward += reward.item()
             steps += 1

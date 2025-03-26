@@ -105,7 +105,7 @@ def main():
     data_dir = Path("random_bases")
 
     # Create DataLoaders
-    _, val_loader, test_loader = load_lattice_dataloaders(
+    val_loader, test_loader = load_lattice_dataloaders(
         data_dir=data_dir,
         dimension=args.dim,
         distribution_type=args.dist,

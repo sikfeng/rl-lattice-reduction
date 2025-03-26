@@ -97,11 +97,6 @@ def load_lattice_dataloader(data_dir, dimension, distribution_type,
 def load_lattice_dataloaders(data_dir, dimension, distribution_type,
                              batch_size=32, shuffle=True, num_workers=0,
                              transform=None, device=None):
-    train_dataloader = load_lattice_dataloader(data_dir=data_dir, dimension=dimension,
-                                               distribution_type=distribution_type,
-                                               split="train", batch_size=batch_size,
-                                               shuffle=shuffle, num_workers=num_workers,
-                                               transform=transform, device=device)
     val_dataloader = load_lattice_dataloader(data_dir=data_dir, dimension=dimension,
                                              distribution_type=distribution_type,
                                              split="val", batch_size=batch_size,
@@ -113,4 +108,4 @@ def load_lattice_dataloaders(data_dir, dimension, distribution_type,
                                               shuffle=shuffle, num_workers=num_workers,
                                               transform=transform, device=device)
 
-    return train_dataloader, val_dataloader, test_dataloader
+    return val_dataloader, test_dataloader
