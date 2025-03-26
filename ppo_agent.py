@@ -469,18 +469,18 @@ class PPOAgent(nn.Module):
             # Create action masks
             terminate_mask = (actions == 0) # [batch_size]
             continue_mask = ~terminate_mask # [batch_size]
-            
+
             # Calculate termination log probs (Bernoulli distribution)
             term_dist = torch.distributions.Bernoulli(probs=term_probs)
             term_log_probs = term_dist.log_prob(terminate_mask.float()) # [batch_size]
-            
+
             # Calculate block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
                 loc=block_preds[continue_mask],
                 scale=self.actor_critic.get_std().expand_as(block_preds[continue_mask])
             )
             block_log_probs = block_dist.log_prob(actions[continue_mask].float()) # [continue_size]
-            
+
             # Combine log probabilities
             new_log_probs = torch.zeros_like(old_log_probs) # [batch_size, 1]
             new_log_probs[terminate_mask] = term_log_probs[terminate_mask]
@@ -488,10 +488,10 @@ class PPOAgent(nn.Module):
                 # Get log P(continue) for continue actions
                 log_p_continue = term_dist.log_prob(0.0)  # [batch_size]
                 log_p_continue = log_p_continue[continue_mask]  # [num_continue]
-                
+
                 # Get log P(block_size) for continue actions
                 log_p_block = block_log_probs  # [num_continue]
-                
+
                 new_log_probs[continue_mask] = (log_p_continue + log_p_block)
 
             r"""
