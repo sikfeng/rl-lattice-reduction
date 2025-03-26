@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
     parser.add_argument("--dim", type=int, default=32, help="Lattice dimension.")
     parser.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
+    parser.add_argument("--min-dim", type=int, required=True, help="Minimum basis dimension.")
+    parser.add_argument("--max-dim", type=int, required=True, help="Maximum basis dimension.")
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
     parser.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
     parser.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction (of the resulting basis) in the reward function.")
@@ -41,6 +43,9 @@ def main():
     pred_group.add_argument("--discrete", action="store_true", help="Use discrete prediction type.")
 
     args = parser.parse_args()
+
+    if args.min_dim > args.max_dim:
+        raise ValueError("min_dim must be <= max_dim")
 
     if args.max_block_size is None:
         args.max_block_size = args.dim
@@ -101,7 +106,8 @@ def main():
     wandb.init(project="bkz-rl-training", name=f"dim-{args.dim}_{start_timestamp}")
 
     env_config = ReductionEnvConfig(
-        max_basis_dim=args.dim,
+        min_basis_dim=args.min_dim,
+        max_basis_dim=args.max_dim,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,

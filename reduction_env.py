@@ -328,6 +328,7 @@ class ReductionEnvConfig:
     max_steps: Optional[int] = None
     max_block_size: int = None  # inclusive
     time_limit: float = 1.0
+    min_basis_dim: int = 16
     max_basis_dim: int = None
     batch_size: int = 1
 
@@ -372,7 +373,11 @@ class ReductionEnvironment:
 
     def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         if options is None:
-            basis_dim = self.config.max_basis_dim
+            #basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
+            basis_dim = np.random.randint(
+                self.config.min_basis_dim // 2, 
+                (self.config.max_basis_dim + 1) // 2
+            ) * 2 # temp hack until I figure out how to properly represent allowable lattice dimensions
             options = generate_random_basis(None, basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
 
@@ -393,7 +398,7 @@ class ReductionEnvironment:
         with self.tracer.context("lll"):
             self.bkz.lll_obj()
 
-        self.action_history = [1]  # initial basis is always LLL reduced
+        self.action_history = [1]  # initial basis is always LLL = BKZ-2 reduced
         self.log_defect_history = []
         self.shortest_length_history = []
         self.time_history = []
