@@ -1,5 +1,6 @@
 checkpoint/
 random_bases/
+wandb/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
