@@ -255,48 +255,70 @@ class ContinuousActorCritic(nn.Module):
             gs_norms_embedding,
             current_action_embedding
         ], dim=2)
-        simulated_gs_norms = torch.zeros(batch_size, self.max_basis_dim, device=device)
-        generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
 
-        for i in range(basis_dim.max()):
-            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+        if target_gs_norms is None:
+            # auto-regressive generation
+            simulated_gs_norms = torch.zeros(batch_size, self.max_basis_dim, device=device)
+            generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
+
+            for i in range(basis_dim.max()):
+                tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+                tgt = self.gs_norms_encoder.pos_encoding(tgt)
+
+                # Create causal mask for autoregressive generation
+                tgt_mask = None
+                if i > 0:
+                    tgt_mask = torch.triu(torch.ones(
+                        i+1, i+1, device=device) * float('-inf'), diagonal=1)
+
+                tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
+                decoder_output = self.gs_norm_simulator(
+                    tgt=tgt,
+                    memory=gs_norm_sim_context,
+                    tgt_mask=tgt_mask
+                )
+                # [batch_size, 1, hidden_dim]
+                current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
+
+                # Project to get the norm value, tie with input projection weights
+                current_prediction = (current_prediction
+                                    - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
+                predicted_norm = torch.nn.functional.linear(
+                    current_prediction,
+                    self.gs_norms_encoder.input_projection.weight.t(),
+                    bias=None
+                )
+
+                simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
+
+                if i < basis_dim.max() - 1:
+                    generated_sequence = torch.cat([
+                        generated_sequence,
+                        predicted_norm.detach()
+                    ], dim=1)
+        else:
+            tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
             tgt = self.gs_norms_encoder.pos_encoding(tgt)
 
-            # Create causal mask for autoregressive generation
-            tgt_mask = None
-            if i > 0:
-                tgt_mask = torch.triu(torch.ones(
-                    i+1, i+1, device=device) * float('-inf'), diagonal=1)
+            seq_len = target_gs_norms.size(1)
+            tgt_mask = torch.triu(torch.ones(seq_len, seq_len, device=device) * float('-inf'), diagonal=1)
 
-            tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
+            tgt = torch.cat([tgt, current_action_embedding[:, :seq_len, :]], dim=2)
             decoder_output = self.gs_norm_simulator(
                 tgt=tgt,
                 memory=gs_norm_sim_context,
                 tgt_mask=tgt_mask
             )
-            # [batch_size, 1, hidden_dim]
-            current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
 
-            # Project to get the norm value, tie with input projection weights
+            current_prediction = decoder_output[:, :, :self.gs_norms_hidden_dim]
             current_prediction = (current_prediction
                                   - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-            predicted_norm = torch.nn.functional.linear(
+
+            simulated_gs_norms = torch.nn.functional.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
                 bias=None
-            )
-
-            simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
-
-            if i < basis_dim.max() - 1:
-                if target_gs_norms is not None:
-                    next_val = target_gs_norms[:, i].unsqueeze(1).unsqueeze(2)
-                else:
-                    next_val = predicted_norm.detach()
-                generated_sequence = torch.cat([
-                    generated_sequence,
-                    next_val
-                ], dim=1)
+            ).squeeze(-1)
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
@@ -437,16 +459,17 @@ class DiscreteActorCritic(nn.Module):
         return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
-                 previous_action: torch.Tensor, current_action: torch.Tensor,
+                 previous_action: torch.Tensor,
+                 basis_dim: torch.Tensor, current_action: torch.Tensor,
                  cached_states: Dict[str, torch.Tensor] = None,
                  target_gs_norms: Optional[torch.Tensor] = None,
                  ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if not self.simulator:
-            raise RuntimeError("ActorCritic model not configured to simulate")
+            raise RuntimeError("ActorCritic model not initialized to simulate.")
 
         if cached_states is None:
             cached_states = dict()
-        batch_size, basis_dim = current_gs_norms.shape
+        batch_size = current_gs_norms.size(0)
         device = current_gs_norms.device
 
         if "gs_norms_embedding" in cached_states:
@@ -492,48 +515,70 @@ class DiscreteActorCritic(nn.Module):
             gs_norms_embedding,
             current_action_embedding
         ], dim=2)
-        simulated_gs_norms = torch.zeros(batch_size, self.max_basis_dim, device=device)
-        generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
 
-        for i in range(basis_dim.max()):
-            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+        if target_gs_norms is None:
+            # auto-regressive generation
+            simulated_gs_norms = torch.zeros(batch_size, self.max_basis_dim, device=device)
+            generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
+
+            for i in range(basis_dim.max()):
+                tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+                tgt = self.gs_norms_encoder.pos_encoding(tgt)
+
+                # Create causal mask for autoregressive generation
+                tgt_mask = None
+                if i > 0:
+                    tgt_mask = torch.triu(torch.ones(
+                        i+1, i+1, device=device) * float('-inf'), diagonal=1)
+
+                tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
+                decoder_output = self.gs_norm_simulator(
+                    tgt=tgt,
+                    memory=gs_norm_sim_context,
+                    tgt_mask=tgt_mask
+                )
+                # [batch_size, 1, hidden_dim]
+                current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
+
+                # Project to get the norm value, tie with input projection weights
+                current_prediction = (current_prediction
+                                    - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
+                predicted_norm = torch.nn.functional.linear(
+                    current_prediction,
+                    self.gs_norms_encoder.input_projection.weight.t(),
+                    bias=None
+                )
+
+                simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
+
+                if i < basis_dim.max() - 1:
+                    generated_sequence = torch.cat([
+                        generated_sequence,
+                        predicted_norm.detach()
+                    ], dim=1)
+        else:
+            tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
             tgt = self.gs_norms_encoder.pos_encoding(tgt)
 
-            # Create causal mask for autoregressive generation
-            tgt_mask = None
-            if i > 0:
-                tgt_mask = torch.triu(torch.ones(
-                    i+1, i+1, device=device) * float('-inf'), diagonal=1)
+            seq_len = target_gs_norms.size(1)
+            tgt_mask = torch.triu(torch.ones(seq_len, seq_len, device=device) * float('-inf'), diagonal=1)
 
-            tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
+            tgt = torch.cat([tgt, current_action_embedding[:, :seq_len, :]], dim=2)
             decoder_output = self.gs_norm_simulator(
                 tgt=tgt,
                 memory=gs_norm_sim_context,
                 tgt_mask=tgt_mask
             )
-            # [batch_size, 1, hidden_dim]
-            current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
 
-            # Project to get the norm value, tie with input projection weights
+            current_prediction = decoder_output[:, :, :self.gs_norms_hidden_dim]
             current_prediction = (current_prediction
                                   - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-            predicted_norm = torch.nn.functional.linear(
+
+            simulated_gs_norms = torch.nn.functional.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
                 bias=None
-            )
-
-            simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
-
-            if i < basis_dim.max() - 1:
-                if target_gs_norms is not None:
-                    next_val = target_gs_norms[:, i].unsqueeze(1).unsqueeze(2)
-                else:
-                    next_val = predicted_norm.detach()
-                generated_sequence = torch.cat([
-                    generated_sequence,
-                    next_val
-                ], dim=1)
+            ).squeeze(-1)
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
@@ -820,11 +865,12 @@ class Agent(nn.Module):
                 current_features = self.actor_critic.preprocess_inputs(states)
                 next_features = self.actor_critic.preprocess_inputs(next_states)
                 predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
-                    current_features["gs_norms"],
-                    current_features["last_action"],
-                    current_features["basis_dim"],
-                    actions.float(),
-                    cached_states
+                    current_gs_norms=current_features["gs_norms"],
+                    previous_action=current_features["last_action"],
+                    basis_dim=current_features["basis_dim"],
+                    current_action=actions.float(),
+                    cached_states=cached_states,
+                    target_gs_norms=next_features["gs_norms"],
                 )
 
                 # Calculate simulator losses
@@ -955,11 +1001,12 @@ class Agent(nn.Module):
                 current_features = self.actor_critic.preprocess_inputs(states)
                 next_features = self.actor_critic.preprocess_inputs(next_states)
                 predicted_gs_norms, predicted_time, _ = self.actor_critic.simulate(
-                    current_features["gs_norms"],
-                    current_features["last_action"],
-                    current_features["basis_dim"],
-                    actions.float(),
-                    cached_states
+                    current_gs_norms=current_features["gs_norms"],
+                    previous_action=current_features["last_action"],
+                    basis_dim=current_features["basis_dim"],
+                    current_action=actions.float(),
+                    cached_states=cached_states,
+                    target_gs_norms=next_features["gs_norms"],
                 )
 
                 # Calculate simulator losses
