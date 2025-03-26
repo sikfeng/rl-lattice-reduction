@@ -11,18 +11,18 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from ppo_agent import PPOAgent
+from agent import Agent
 from load_dataset import load_lattice_dataloaders
 
 
-def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episode: int) -> dict:
+def evaluate(agent: Agent, val_dataloader, test_dataloader, checkpoint_episode: int) -> dict:
     val_metrics = defaultdict(list)
     test_metrics = defaultdict(list)
 
     with torch.no_grad():
         # Validation evaluation
-        for ep, batch in enumerate(tqdm(val_dataloader, 
-                                        dynamic_ncols=True, 
+        for ep, batch in enumerate(tqdm(val_dataloader,
+                                        dynamic_ncols=True,
                                         desc=f"Validating Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
@@ -32,7 +32,7 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             # Accumulate for aggregation
             for k, v in batch_metrics.items():
                 val_metrics[k].append(v)
-        
+
         # Aggregate validation metrics
         aggregated_val = {}
         for k in val_metrics:
@@ -40,8 +40,8 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             aggregated_val[f'avg_{k}'] = avg
 
         # Test evaluation
-        for ep, batch in enumerate(tqdm(test_dataloader, 
-                                        dynamic_ncols=True, 
+        for ep, batch in enumerate(tqdm(test_dataloader,
+                                        dynamic_ncols=True,
                                         desc=f"Testing Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
             # Log per-batch metrics
@@ -51,7 +51,7 @@ def evaluate(agent: PPOAgent, val_dataloader, test_dataloader, checkpoint_episod
             # Accumulate for aggregation
             for k, v in batch_metrics.items():
                 test_metrics[k].append(v)
-        
+
         # Aggregate test metrics
         aggregated_test = {}
         for k in test_metrics:
@@ -145,8 +145,10 @@ def main():
 
         checkpoint = torch.load(pth_file, map_location=device, weights_only=False)
         state_dict = checkpoint['state_dict']
-        ppo_config = checkpoint['ppo_config']
-        agent = PPOAgent(ppo_config=ppo_config, device=device, batch_size=1).to(device)
+        agent_config = checkpoint['agent_config']
+        agent_config.batch_size = 1
+        agent_config.device = device
+        agent = Agent(agent_config=agent_config).to(device)
         agent.load_state_dict(state_dict)
         agent.eval()
 

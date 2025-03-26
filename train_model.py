@@ -10,7 +10,7 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from ppo_agent import PPOAgent, PPOConfig
+from agent import Agent, AgentConfig, PPOConfig
 from reduction_env import ReductionEnvConfig
 
 
@@ -32,13 +32,12 @@ def main():
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--pred-type", type=str, required=True, choices=["continuous", "discrete"])
     args = parser.parse_args()
 
-    # Set default for max_block_size
     if args.max_block_size is None:
         args.max_block_size = args.dim
 
-    # Validation
     if args.max_block_size > args.dim:
         raise ValueError("max_block_size must be at most dim.")
     if 2 > args.max_block_size:
@@ -92,8 +91,16 @@ def main():
         batch_size=args.batch_size,
     )
 
-    ppo_config = PPOConfig(env_config=env_config, simulator=args.simulator)
-    agent = PPOAgent(ppo_config=ppo_config, device=device, batch_size=args.batch_size).to(device)
+    ppo_config = PPOConfig()
+    agent_config = AgentConfig(
+        ppo_config=ppo_config,
+        device=device,
+        batch_size=args.batch_size,
+        env_config=env_config,
+        simulator=args.simulator,
+        pred_type=args.pred_type
+    )
+    agent = Agent(agent_config=agent_config).to(device)
 
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
