@@ -10,7 +10,7 @@ import torch.optim as optim
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
-from reduction_env import ReductionEnvConfig, ReductionEnvironment, VectorizedReductionEnvironment
+from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
 class PositionalEncoding(nn.Module):
@@ -193,7 +193,7 @@ class ActorCritic(nn.Module):
                  ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if not self.simulator:
             raise RuntimeError("ActorCritic model not configured to simulate")
-        
+
         if cached_states is None:
             cached_states = dict()
         batch_size, basis_dim = current_gs_norms.shape
@@ -588,7 +588,7 @@ class PPOAgent(nn.Module):
             "time": time_history[-1] - time_history[0],
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
-    
+
     def save(self, path: Path):
         checkpoint = {
             'state_dict': self.state_dict(),
