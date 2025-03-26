@@ -4,7 +4,7 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 
-from fpylll import FPYLLL
+from fpylll import FPLLL
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
