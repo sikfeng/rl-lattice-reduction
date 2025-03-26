@@ -4,7 +4,7 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 
-from fpylll import FPLLL
+import fpylll
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
 from tqdm import tqdm
@@ -77,7 +77,7 @@ def gaussian_heuristic(basis: np.ndarray):
     gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
 
     # Calculate the Gaussian Heuristic
-    gh_squared = FPYLLL.gaussian_heuristic(gs_norms_squared)
+    gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
 
     return math.sqrt(gh_squared)
 
