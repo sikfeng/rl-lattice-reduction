@@ -10,7 +10,7 @@ import torch.optim as optim
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
-from reduction_env import ReductionEnvConfig, ReductionEnvironment, VectorizedReductionEnvironment
+from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
 class PositionalEncoding(nn.Module):
@@ -512,7 +512,7 @@ class PPOAgent(nn.Module):
             term_entropy = term_dist.entropy().mean()
             block_entropy = block_dist.entropy().mean() if continue_mask.any() else 0.0
             entropy_loss = -(term_entropy + block_entropy)
-            
+
             with torch.no_grad():
                 term_loss = -torch.min(
                     surr1[terminate_mask],
@@ -648,7 +648,7 @@ class PPOAgent(nn.Module):
             "time": time_history[-1] - time_history[0],
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
-    
+
     def save(self, path: Path):
         checkpoint = {
             'state_dict': self.state_dict(),
