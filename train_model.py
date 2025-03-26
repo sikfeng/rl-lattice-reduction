@@ -15,8 +15,6 @@ from reduction_env import ReductionEnvConfig
 
 
 def main():
-    distributions = ["uniform", "qary", "ntrulike"]
-
     FPLLL.set_precision(1000)
 
     parser = argparse.ArgumentParser(description="Reinforcement Learning for BKZ Lattice Reduction.")
