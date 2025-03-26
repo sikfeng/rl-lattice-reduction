@@ -19,20 +19,29 @@ def main():
 
     FPLLL.set_precision(1000)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--episodes", type=int, default=1000)
-    parser.add_argument("--chkpt-interval", type=int, default=1000)
-    parser.add_argument("--dim", type=int, default=32)
-    parser.add_argument("--dist", type=str, required=True, choices=distributions)
-    parser.add_argument("--max-block-size", type=int)
-    parser.add_argument("--time-penalty-weight", type=float, default=-1.0)
-    parser.add_argument("--defect-reward-weight", type=float, default=0.1)
-    parser.add_argument("--length-reward-weight", type=float, default=1.0)
-    parser.add_argument("--time-limit", type=float, default=300.0)
-    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--pred-type", type=str, required=True, choices=["continuous", "discrete"])
+    parser = argparse.ArgumentParser(description="Reinforcement Learning for BKZ Lattice Reduction.")
+
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
+    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes.")
+    parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
+    parser.add_argument("--dim", type=int, default=32, help="Lattice dimension.")
+    parser.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
+    parser.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
+    parser.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
+    parser.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction (of the resulting basis) in the reward function.")
+    parser.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
+    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
+
+    dist_group = parser.add_mutually_exclusive_group(required=True)
+    dist_group.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
+    dist_group.add_argument("--qary", action="store_true", help="Use a q-ary distribution.")
+    dist_group.add_argument("--ntrulike", action="store_true", help="Use an NTRU-like distribution.")
+
+    pred_group = parser.add_mutually_exclusive_group(required=True)
+    pred_group.add_argument("--continuous", action="store_true", help="Use continuous prediction type.")
+    pred_group.add_argument("--discrete", action="store_true", help="Use discrete prediction type.")
+
     args = parser.parse_args()
 
     if args.max_block_size is None:
@@ -42,6 +51,19 @@ def main():
         raise ValueError("max_block_size must be at most dim.")
     if 2 > args.max_block_size:
         raise ValueError("max_block_size cannot be less than 2.")
+
+    if args.uniform:
+        args.dist = "uniform"
+    elif args.qary:
+        args.dist = "qary"
+    elif args.ntrulike:
+        args.dist = "ntrulike"
+
+    # Determine selected prediction type
+    if args.continuous:
+        args.pred_type = "continuous"
+    else:
+        args.pred_type = "discrete"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
