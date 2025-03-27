@@ -368,8 +368,7 @@ class ReductionEnvironment:
         return {
             "log_defect": self.log_defect_history[-1],
             "shortest_length": self.shortest_length_history[-1],
-            "time": self.time_history[-1],
-            #"action_history": self.action_history
+            "time": sum(self.time_history),
         }
 
     def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
@@ -399,11 +398,12 @@ class ReductionEnvironment:
         with self.tracer.context("lll"):
             self.bkz.lll_obj()
 
-        self.action_history = [1]  # initial basis is always LLL = BKZ-2 reduced
+        self.action_history = []
         self.log_defect_history = []
         self.shortest_length_history = []
         self.time_history = []
-        self._update_history()
+        # initial basis is always LLL = BKZ-2 reduced
+        self._update_history(action=1, time_taken=0)
 
         self.current_step = 0
 
@@ -420,13 +420,18 @@ class ReductionEnvironment:
         return block_size - 1
 
     def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+        time_taken = 0
         if action != 0:
+            start_time = process_time()
             block_size = self._action_to_block(action)
             self.clean = self.bkz.tour(BKZ.EasyParam(
-                block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True), tracer=self.tracer)
+                block_size=block_size,
+                max_loops=1,
+                gh_factor=1.1,
+                auto_abort=True), tracer=self.tracer)
+            time_taken = process_time() - start_time
 
-        self._update_history()
-        self.action_history.append(int(action))
+        self._update_history(action=int(action), time_taken=time_taken)
 
         self.terminated = self._check_termination()
         self.truncated = self._check_truncation()
@@ -442,8 +447,9 @@ class ReductionEnvironment:
 
         return obs, reward, self.terminated, self.truncated, info
 
-    def _update_history(self):
-        self.time_history.append(process_time())
+    def _update_history(self, action: int, time_taken: float = None):
+        self.action_history.append(action)
+        self.time_history.append(time_taken)
         self.log_defect_history.append(self.compute_log_defect(self.basis))
         self.shortest_length_history.append(
             min(v.norm() for v in self.basis) / self.gh)
@@ -459,8 +465,7 @@ class ReductionEnvironment:
             "length_reward": 0.0,
         }
 
-        rewards["time_penalty"] = (self.config.time_penalty_weight
-                                   * (self.time_history[-1] - self.time_history[-2]))
+        rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
         rewards["defect_reward"] = (self.config.defect_reward_weight
                                     * (self.log_defect_history[-2] - self.log_defect_history[-1]))
         rewards["length_reward"] = (self.config.length_reward_weight
@@ -481,7 +486,7 @@ class ReductionEnvironment:
         if len(self.action_history) >= self.config.max_steps:
             return True
 
-        if process_time() - self.time_history[0] >= self.config.time_limit:
+        if sum(self.time_history) >= self.config.time_limit:
             return True
 
         return False
