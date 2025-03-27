@@ -376,7 +376,7 @@ class ReductionEnvironment:
             #basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
             basis_dim = np.random.randint(
                 self.config.train_min_dim // 2,
-                (self.config.train_max_dim + 1) // 2
+                self.config.train_max_dim // 2 + 1,
             ) * 2 # temp hack until I figure out how to properly represent allowable lattice dimensions
             options = generate_random_basis(None, basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
