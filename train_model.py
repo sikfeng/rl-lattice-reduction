@@ -22,10 +22,10 @@ def main():
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes.")
     parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
-    parser.add_argument("--dim", type=int, default=32, help="Lattice dimension.")
     parser.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
-    parser.add_argument("--min-dim", type=int, required=True, help="Minimum basis dimension.")
-    parser.add_argument("--max-dim", type=int, required=True, help="Maximum basis dimension.")
+    parser.add_argument("--net-dim", type=int, required=True, help="Maximum input dimension for neural network architecture.")
+    parser.add_argument("--train-min-dim", type=int, required=True, help="Minimum basis dimension for training instances.")
+    parser.add_argument("--train-max-dim", type=int, required=True, help="Maximum basis dimension for training instances.")
     parser.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
     parser.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
     parser.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction (of the resulting basis) in the reward function.")
@@ -44,13 +44,15 @@ def main():
 
     args = parser.parse_args()
 
-    if args.min_dim > args.max_dim:
-        raise ValueError("min_dim must be <= max_dim")
-
+    if args.train_min_dim > args.train_max_dim:
+        raise ValueError("train_min_dim must be <= train_max_dim")
+    if args.train_max_dim > args.net_dim:
+        raise ValueError("train_max_dim cannot exceed net_dim")
     if args.max_block_size is None:
-        args.max_block_size = args.dim
-
-    if args.max_block_size > args.dim:
+        args.max_block_size = args.train_max_dim  # Set to max training dimension
+    if args.max_block_size > args.train_max_dim:
+        raise ValueError("max_block_size must be <= train_max_dim")
+    if args.max_block_size > args.net_dim:
         raise ValueError("max_block_size must be at most dim.")
     if 2 > args.max_block_size:
         raise ValueError("max_block_size cannot be less than 2.")
@@ -76,7 +78,7 @@ def main():
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
     checkpoint_dir = Path(
-        f"checkpoint/dim-{args.dim}_{start_timestamp}")
+        f"checkpoint/dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -103,11 +105,12 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
-    wandb.init(project="bkz-rl-training", name=f"dim-{args.dim}_{start_timestamp}")
+    wandb.init(project="bkz-rl-training", name=f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}")
 
     env_config = ReductionEnvConfig(
-        min_basis_dim=args.min_dim,
-        max_basis_dim=args.max_dim,
+        net_dim=args.net_dim,
+        train_min_dim=args.train_min_dim,
+        train_max_dim=args.train_max_dim,
         max_block_size=args.max_block_size,
         time_penalty_weight=args.time_penalty_weight,
         defect_reward_weight=args.defect_reward_weight,

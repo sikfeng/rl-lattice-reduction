@@ -6,6 +6,7 @@ import numpy as np
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
@@ -55,22 +56,25 @@ class TransformerEncoder(nn.Module):
             num_layers=num_layers
         )
 
-    def forward(self, x, seq_lengths):
-        batch_size = x.size(0)
+    def forward(self, x, attn_mask):
         x = self.input_projection(x)
         x = self.pos_encoding(x)
         x = self.dropout(x)
 
-        padding_mask = torch.zeros(
-            batch_size, self.max_len, dtype=torch.bool, device=x.device)
-        for i, length in enumerate(seq_lengths.int()):
-            padding_mask[i, :length] = True
-
-        attn_mask = ~padding_mask
-
         encoder_output = self.transformer_encoder(
             x, src_key_padding_mask=attn_mask)
         return encoder_output
+
+    def generate_attn_mask(self, seq_lengths):
+        batch_size = seq_lengths.size(0)
+        padding_mask = torch.zeros(
+            batch_size,
+            self.max_len,
+            dtype=torch.bool,
+            device=seq_lengths.device)
+        for i, length in enumerate(seq_lengths.int()):
+            padding_mask[i, :length] = True
+        return ~padding_mask
 
 
 class ContinuousActorCritic(nn.Module):
@@ -165,14 +169,16 @@ class ContinuousActorCritic(nn.Module):
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
             gs_norms_reshaped = gs_norms.unsqueeze(-1)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
+            attn_mask = self.gs_norms_encoder.generate_attn_mask(basis_dim)
+            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, attn_mask)
 
         # block size \(b\) corresponds to action id \(b - 1\)
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
         else:
-            indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
-            indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
+            indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
+            indices = F.pad(indices, (0, self.max_basis_dim - indices.size(1)), value=0)
+            indices = indices.expand(-1, self.max_basis_dim)
             basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
             previous_effective_block_size = torch.min(
                 previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
@@ -182,7 +188,6 @@ class ContinuousActorCritic(nn.Module):
             prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
             prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1))
 
-        # Combine all features
         combined = torch.cat([
             gs_norms_embedding.mean(dim=1),
             prev_action_embedding.mean(dim=1)
@@ -283,7 +288,7 @@ class ContinuousActorCritic(nn.Module):
                 # Project to get the norm value, tie with input projection weights
                 current_prediction = (current_prediction
                                     - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-                predicted_norm = torch.nn.functional.linear(
+                predicted_norm = F.linear(
                     current_prediction,
                     self.gs_norms_encoder.input_projection.weight.t(),
                     bias=None
@@ -314,7 +319,7 @@ class ContinuousActorCritic(nn.Module):
             current_prediction = (current_prediction
                                   - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
 
-            simulated_gs_norms = torch.nn.functional.linear(
+            simulated_gs_norms = F.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
                 bias=None
@@ -446,7 +451,6 @@ class DiscreteActorCritic(nn.Module):
             prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
             prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
 
-        # Combine all features
         combined = torch.cat([
             gs_norms_embedding.mean(dim=1),
             prev_action_embedding.mean(dim=1)
@@ -543,7 +547,7 @@ class DiscreteActorCritic(nn.Module):
                 # Project to get the norm value, tie with input projection weights
                 current_prediction = (current_prediction
                                     - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-                predicted_norm = torch.nn.functional.linear(
+                predicted_norm = F.linear(
                     current_prediction,
                     self.gs_norms_encoder.input_projection.weight.t(),
                     bias=None
@@ -574,7 +578,7 @@ class DiscreteActorCritic(nn.Module):
             current_prediction = (current_prediction
                                   - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
 
-            simulated_gs_norms = torch.nn.functional.linear(
+            simulated_gs_norms = F.linear(
                 current_prediction,
                 self.gs_norms_encoder.input_projection.weight.t(),
                 bias=None
@@ -648,14 +652,14 @@ class Agent(nn.Module):
 
         if self.agent_config.pred_type == "continuous":
             self.actor_critic = ContinuousActorCritic(
-                self.agent_config.env_config.max_basis_dim,
+                self.agent_config.env_config.net_dim,
                 self.action_dim,
                 self.agent_config.dropout_p,
                 simulator=self.agent_config.simulator
             )
         elif self.agent_config.pred_type == "discrete":
             self.actor_critic = DiscreteActorCritic(
-                self.agent_config.env_config.max_basis_dim,
+                self.agent_config.env_config.net_dim,
                 self.action_dim,
                 self.agent_config.dropout_p,
                 simulator=self.agent_config.simulator

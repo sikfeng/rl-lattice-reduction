@@ -328,8 +328,9 @@ class ReductionEnvConfig:
     max_steps: Optional[int] = None
     max_block_size: int = None  # inclusive
     time_limit: float = 1.0
-    min_basis_dim: int = 16
-    max_basis_dim: int = None
+    train_max_dim: int = 16
+    train_min_dim: int = None
+    net_dim: int = None
     batch_size: int = 1
 
     time_penalty_weight: float = -1.0
@@ -340,7 +341,7 @@ class ReductionEnvConfig:
 
     def __post_init__(self):
         if self.max_steps is None:
-            self.max_steps = 2 * self.max_basis_dim
+            self.max_steps = 2 * self.train_max_dim
 
         self.actions_n = self.max_block_size
 
@@ -351,11 +352,11 @@ class ReductionEnvironment:
         self.config = config
 
     def _get_observation(self) -> Dict[str, torch.Tensor]:
-        basis = np.zeros((self.config.max_basis_dim, self.config.max_basis_dim))
-        basis = torch.tensor(self.basis.to_matrix(basis), dtype=torch.float32)
+        basis = np.zeros((self.config.net_dim, self.config.net_dim))
+        self.basis.to_matrix(basis)
+        basis = torch.tensor(basis, dtype=torch.float32)
 
-        last_action = torch.tensor(
-            [self.action_history[-1]], dtype=torch.float32)
+        last_action = torch.tensor([self.action_history[-1]], dtype=torch.float32)
 
         return {
             "basis": basis,
@@ -375,8 +376,8 @@ class ReductionEnvironment:
         if options is None:
             #basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
             basis_dim = np.random.randint(
-                self.config.min_basis_dim // 2, 
-                (self.config.max_basis_dim + 1) // 2
+                self.config.train_min_dim // 2,
+                (self.config.train_max_dim + 1) // 2
             ) * 2 # temp hack until I figure out how to properly represent allowable lattice dimensions
             options = generate_random_basis(None, basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
