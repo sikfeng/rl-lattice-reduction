@@ -200,7 +200,8 @@ class ContinuousActorCritic(nn.Module):
         # linearly rescale relative_size from sigmoid output in (0, 1)
         # to allowed block sizes (prev_action + 1, basis_dim)
         relative_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
-        actor_output = torch.stack([actor_output[:, 0], relative_size], dim=1)
+        actor_output = torch.clamp(torch.stack([actor_output[:, 0], relative_size], dim=1), min=0.0, max=1.0)
+        #actor_output = torch.stack([actor_output[:, 0], relative_size], dim=1)
         return actor_output, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
