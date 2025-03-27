@@ -717,22 +717,27 @@ class Agent(nn.Module):
             if self.agent_config.pred_type == "continuous":
                 termination_prob, block_size_float = logits[:, 0], logits[:, 1]
                 terminate = torch.bernoulli(termination_prob).bool()
-                block_size = torch.round(block_size_float).int() # block sizes are integers
-                block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim) # ensure block size is within valid range
-                action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
-
                 termination_log_probs = torch.where(
                     terminate,
                     torch.log(termination_prob + 1e-8),
                     torch.log(1 - termination_prob + 1e-8)
                 )
-                dist = torch.distributions.Normal(
+
+                block_size_dist = torch.distributions.Normal(
                     block_size_float,
                     self.actor_critic.get_std().expand_as(block_size_float)
                 )
+                cont_block = block_size_dist.rsample()
+                block_size = torch.round(cont_block).int() # block sizes are integers
+                block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim) # ensure block size is within valid range
+                block_size_log_probs = block_size_dist.log_prob(cont_block)
 
-                block_size_log_probs = dist.log_prob(block_size.float())
+                # calculate log probs, and adjust for boundary
                 log_probs = termination_log_probs + (1 - terminate.float()) * block_size_log_probs
+                log_probs = log_probs - torch.log(1 - block_size_dist.cdf(last_action + 1) + block_size_dist.cdf(basis_dim))
+
+                action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
+
             elif self.agent_config.pred_type == "discrete":
                 # logits [batch_size, action_dim]
                 # basis_dim [batch_size]
