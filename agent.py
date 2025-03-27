@@ -434,7 +434,8 @@ class DiscreteActorCritic(nn.Module):
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
             gs_norms_reshaped = gs_norms.unsqueeze(-1)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, basis_dim)
+            attn_mask = self.gs_norms_encoder.generate_attn_mask(basis_dim)
+            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, attn_mask)
 
         # block size \(b\) corresponds to action id \(b - 1\)
         if "prev_action_embedding" in cached_states:
