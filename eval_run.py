@@ -78,7 +78,7 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
-    run_id = Path(args.run_dir).name.replace(":", "_")
+    run_id = Path(args.run_dir).name.replace(":", "_") + f"_test_dim_{args.dim}"
     wandb.init(project="bkz-rl-evaluation", name=run_id, id=run_id, resume="allow")
 
     data_dir = Path("random_bases")
