@@ -227,7 +227,7 @@ class ContinuousActorCritic(nn.Module):
                 basis_dim,
             )  # [batch_size, basis_dim, hidden_dim]
 
-        indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
+        indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
         indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
         basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
         # block size \(b\) corresponds to action id \(b - 1\)
