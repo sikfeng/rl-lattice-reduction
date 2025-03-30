@@ -3,6 +3,7 @@ from collections import defaultdict
 import logging
 from pathlib import Path
 import random
+from typing import Dict
 import yaml
 
 from fpylll import FPLLL
@@ -15,33 +16,37 @@ from agent import Agent
 from load_dataset import load_lattice_dataloader
 
 
-def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> dict:
-    val_metrics = defaultdict(list)
+def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> Dict[str, float]:
+    aggregated_metrics = defaultdict(list)
 
     with torch.no_grad():
-        for ep, batch in enumerate(tqdm(val_dataloader,
+        for episode_index, batch in enumerate(tqdm(val_dataloader,
                                         dynamic_ncols=True,
                                         desc=f"Validating Checkpoint {checkpoint_episode}")):
             batch_metrics = agent.evaluate(batch)
-            # Log per-batch metrics
-            logged_metrics = {f"val/{k}_{checkpoint_episode}": v for k, v in batch_metrics.items()}
-            logged_metrics["episode"] = ep
-            wandb.log(logged_metrics)
-            # Accumulate for aggregation
-            for k, v in batch_metrics.items():
-                val_metrics[k].append(v)
 
-        # Aggregate validation metrics
-        aggregated_val = {}
-        for k in val_metrics:
-            avg = sum(val_metrics[k]) / len(val_metrics[k])
-            aggregated_val[f'avg_{k}'] = avg
-        logged_metrics = {f"val/{k}": v for k, v in aggregated_val.items()}
-        logged_metrics["checkpoint_episode"] = ep
-        wandb.log(logged_metrics)
+            per_batch_log = {
+                f"val/{metric}_{checkpoint_episode}": value
+                for metric, value in batch_metrics.items()
+            }
+            per_batch_log["episode"] = episode_index
+            wandb.log(per_batch_log)
 
-        aggregated_val["checkpoint_episode"] = checkpoint_episode
-    return aggregated_val
+            for metric, value in batch_metrics.items():
+                aggregated_metrics[metric].append(value)
+
+        avg_metrics = {
+            f"avg_{metric}": sum(values) / len(values)
+            for metric, values in aggregated_metrics.items()
+        }
+
+        final_log = {f"val/{metric}": value for metric, value in avg_metrics.items()}
+        final_log["checkpoint_episode"] = episode_index
+        wandb.log(final_log)
+
+        avg_metrics["checkpoint_episode"] = checkpoint_episode
+
+        return avg_metrics
 
 def main():
     FPLLL.set_precision(1000)
@@ -65,8 +70,6 @@ def main():
     elif args.ntrulike:
         args.dist = "ntrulike"
 
-    logging.info(args)
-
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -80,6 +83,8 @@ def main():
             logging.StreamHandler()
         ]
     )
+
+    logging.info(args)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -140,6 +145,8 @@ def main():
         agent_config = checkpoint['agent_config']
         agent_config.batch_size = 1
         agent_config.device = device
+        logging.info(agent_config)
+
         agent = Agent(agent_config=agent_config).to(device)
         agent.load_state_dict(state_dict)
         agent.eval()

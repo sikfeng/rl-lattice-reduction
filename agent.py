@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import asdict
 import math
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple, Union
@@ -628,6 +629,10 @@ class PPOConfig:
         self.epochs = epochs
         self.minibatch_size = minibatch_size
 
+    def __str__(self):
+        self_dict = vars(self)
+        return f"PPOConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+
 
 class AgentConfig:
     def __init__(self, ppo_config: PPOConfig,
@@ -645,6 +650,9 @@ class AgentConfig:
         self.pred_type = pred_type
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
+    def __str__(self):
+        self_dict = vars(self)
+        return f"AgentConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
 
 class Agent(nn.Module):
     def __init__(self, agent_config: AgentConfig) -> None:
@@ -1143,7 +1151,7 @@ class Agent(nn.Module):
             "steps": steps,
             "shortest_length": min(shortest_length_history),
             "success": float(min(shortest_length_history) < 1.05),
-            "time": time_history[-1] - time_history[0],
+            "time": sum(time_history),
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
         metrics.update(episode_rewards)

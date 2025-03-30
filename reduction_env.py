@@ -346,6 +346,10 @@ class ReductionEnvConfig:
 
         self.actions_n = self.max_block_size
 
+    def __str__(self):
+        self_dict = vars(self)
+        return f"ReductionEnvConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+
 
 class ReductionEnvironment:
     def __init__(self, config: ReductionEnvConfig):
