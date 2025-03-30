@@ -32,7 +32,7 @@ def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> dict:
                 val_metrics[k].append(v)
 
         # Aggregate validation metrics
-        aggregated_val = {"checkpoint_episode": checkpoint_episode}
+        aggregated_val = {}
         for k in val_metrics:
             avg = sum(val_metrics[k]) / len(val_metrics[k])
             aggregated_val[f'avg_{k}'] = avg
@@ -40,6 +40,7 @@ def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> dict:
         logged_metrics["checkpoint_episode"] = ep
         wandb.log(logged_metrics)
 
+        aggregated_val["checkpoint_episode"] = checkpoint_episode
     return aggregated_val
 
 def main():
@@ -49,8 +50,20 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dim", type=int, default=32)
     parser.add_argument("--run-dir", type=str, required=True)
-    parser.add_argument("--dist", type=str, required=True, choices=["uniform", "qary", "ntrulike"])
+
+    dist_group = parser.add_mutually_exclusive_group(required=True)
+    dist_group.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
+    dist_group.add_argument("--qary", action="store_true", help="Use a q-ary distribution.")
+    dist_group.add_argument("--ntrulike", action="store_true", help="Use an NTRU-like distribution.")
+
     args = parser.parse_args()
+
+    if args.uniform:
+        args.dist = "uniform"
+    elif args.qary:
+        args.dist = "qary"
+    elif args.ntrulike:
+        args.dist = "ntrulike"
 
     logging.info(args)
 

@@ -1,3 +1,4 @@
+from collections import defaultdict
 import math
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple, Union
@@ -1120,6 +1121,7 @@ class Agent(nn.Module):
 
         done = False
         episode_reward = 0
+        episode_rewards = defaultdict(int)
         steps = 0
 
         while not done:
@@ -1130,11 +1132,13 @@ class Agent(nn.Module):
             shortest_length_history.append(info["shortest_length"].item())
             time_history.append(info["time"].item())
             done = terminated or truncated
-            episode_reward += reward.item()
+            for key, value in reward.items():
+                episode_rewards[key] += float(value)
             steps += 1
             state = next_state
+        episode_reward = sum(episode_rewards.values())
 
-        return {
+        metrics = {
             "reward": episode_reward,
             "steps": steps,
             "shortest_length": min(shortest_length_history),
@@ -1142,6 +1146,9 @@ class Agent(nn.Module):
             "time": time_history[-1] - time_history[0],
             "length_improvement": shortest_length_history[0] - min(shortest_length_history)
         }
+        metrics.update(episode_rewards)
+
+        return metrics
 
     def save(self, path: Path):
         checkpoint = {
