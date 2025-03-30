@@ -141,8 +141,10 @@ def main():
         episode_metrics = agent.collect_experiences()
         update_metrics = agent.update()
 
-        combined_metrics = {**episode_metrics, **update_metrics}
-        wandb.log(combined_metrics, step=episode)
+        for metric in episode_metrics:
+            wandb.log(metric)
+
+        wandb.log(update_metrics)
 
         if (episode + 1) % args.chkpt_interval == 0:
             agent.save(checkpoint_dir / f"episodes_{episode}.pth")

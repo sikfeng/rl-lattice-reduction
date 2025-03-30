@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 import math
 import multiprocessing as mp
@@ -438,16 +439,16 @@ class ReductionEnvironment:
         self.current_step += 1
 
         obs = self._get_observation()
-        reward = self._compute_reward()
+        rewards = self._compute_reward()
         info = self._get_info()
         done = self.terminated or self.truncated
 
         if done:
             obs, info = self.reset()
 
-        return obs, reward, self.terminated, self.truncated, info
+        return obs, rewards, self.terminated, self.truncated, info
 
-    def _update_history(self, action: int, time_taken: float = None):
+    def _update_history(self, action: int, time_taken: float = 0.0):
         self.action_history.append(action)
         self.time_history.append(time_taken)
         self.log_defect_history.append(self.compute_log_defect(self.basis))
@@ -455,9 +456,6 @@ class ReductionEnvironment:
             min(v.norm() for v in self.basis) / self.gh)
 
     def _compute_reward(self) -> float:
-        if self.action_history[-1] == 0:
-            return 0.0
-
         # Initialize reward components dictionary for better tracking
         rewards = {
             "time_penalty": 0.0,
@@ -465,14 +463,16 @@ class ReductionEnvironment:
             "length_reward": 0.0,
         }
 
+        if self.action_history[-1] == 0:
+            return rewards
+
         rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
         rewards["defect_reward"] = (self.config.defect_reward_weight
                                     * (self.log_defect_history[-2] - self.log_defect_history[-1]))
         rewards["length_reward"] = (self.config.length_reward_weight
                                     * (self.shortest_length_history[-2] - self.shortest_length_history[-1]))
 
-        total_reward = sum(rewards.values())
-        return float(total_reward)
+        return rewards
 
     def _check_termination(self):
         """Check if episode has terminated"""
@@ -588,7 +588,13 @@ class VectorizedReductionEnvironment:
 
         next_states_ = TensorDict({key: torch.stack(
             [state[key] for state in next_states]).squeeze(-1) for key in next_states[0]})
-        rewards_ = torch.tensor(rewards, dtype=torch.float32)
+
+        rewards_ = defaultdict(list)
+        for d in rewards:
+            for key, value in d.items():
+                rewards_[key].append(value)
+        rewards_ = {key: torch.tensor(value) for key, value in rewards_.items()}
+
         terminateds_ = torch.tensor(terminateds, dtype=torch.bool)
         truncateds_ = torch.tensor(truncateds, dtype=torch.bool)
         infos_ = {}

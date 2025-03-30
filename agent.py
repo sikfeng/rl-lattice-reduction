@@ -1082,7 +1082,8 @@ class Agent(nn.Module):
 
     def collect_experiences(self) -> Dict[str, float]:
         action, log_prob, value = self.get_action(self.state)
-        next_state, reward, terminated, truncated, next_info = self.env.step(action)
+        next_state, rewards, terminated, truncated, next_info = self.env.step(action)
+        reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
         done = terminated | truncated
 
         next_state = TensorDict({k: v.to(self.device)
@@ -1099,11 +1100,16 @@ class Agent(nn.Module):
         self.state = next_state
         self.info = next_info
 
-        return {
-            "episode/reward": reward.sum(),
-            "episode/avg_action_log_prob": log_prob.sum().item(),
-            "episode/avg_value_estimate": value.sum().item(),
-        }
+        metrics = [{
+            "episode/time_penalty": float(rewards["time_penalty"][i]),
+            "episode/length_reward": float(rewards["length_reward"][i]),
+            "episode/defect_reward": float(rewards["defect_reward"][i]),
+            "episode/total_reward": float(reward[i]),
+            "episode/action_log_prob": float(log_prob[i]),
+            "episode/value_estimate": float(value[i]),
+        } for i in range(reward.size(0))]
+
+        return metrics
 
     def evaluate(self, batch: TensorDict) -> Dict:
         self.eval()
