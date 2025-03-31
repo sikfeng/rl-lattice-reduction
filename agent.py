@@ -106,7 +106,7 @@ class ContinuousActorCritic(nn.Module):
             nn.LeakyReLU()
         )
 
-        self.log_std = nn.Parameter(torch.zeros(1))
+        self.log_std = nn.Parameter(torch.rand(1))
 
         self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
         self.actor_hidden_dim = 128
@@ -201,9 +201,8 @@ class ContinuousActorCritic(nn.Module):
         actor_output = self.actor(combined) # [terminate_prob, relative_size]
         # linearly rescale relative_size from sigmoid output in (0, 1)
         # to allowed block sizes (prev_action + 1, basis_dim)
-        relative_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
-        actor_output = torch.clamp(torch.stack([actor_output[:, 0], relative_size], dim=1), min=0.0, max=1.0)
-        #actor_output = torch.stack([actor_output[:, 0], relative_size], dim=1)
+        absolute_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
+        actor_output = torch.stack([actor_output[:, 0], absolute_size], dim=1)
         return actor_output, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
@@ -769,7 +768,7 @@ class Agent(nn.Module):
 
             return action, log_probs, value
 
-    def _update_continuous(self) -> None:
+    def _update_continuous(self) -> Dict[str, float]:
         self.train()
 
         batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
@@ -948,7 +947,7 @@ class Agent(nn.Module):
             })
         return metrics
 
-    def _update_discrete(self) -> None:
+    def _update_discrete(self) -> Dict[str, float]:
         self.train()
 
         batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
@@ -1079,7 +1078,7 @@ class Agent(nn.Module):
             })
         return metrics
 
-    def update(self) -> None:
+    def update(self) -> Dict[str, float]:
         if len(self.replay_buffer) < self.agent_config.ppo_config.minibatch_size:
             return dict()
 
@@ -1110,6 +1109,8 @@ class Agent(nn.Module):
         self.info = next_info
 
         metrics = [{
+            "episode/action": float(action[i]),
+            "episode/time_taken": float(next_info["time"][i] - self.info["time"][i]),
             "episode/time_penalty": float(rewards["time_penalty"][i]),
             "episode/length_reward": float(rewards["length_reward"][i]),
             "episode/defect_reward": float(rewards["defect_reward"][i]),
@@ -1149,6 +1150,7 @@ class Agent(nn.Module):
         metrics = {
             "reward": episode_reward,
             "steps": steps,
+            "smallest_defect": min(log_defect_history),
             "shortest_length": min(shortest_length_history),
             "success": float(min(shortest_length_history) < 1.05),
             "time": sum(time_history),

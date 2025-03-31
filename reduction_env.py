@@ -424,7 +424,7 @@ class ReductionEnvironment:
         # _block_to_action should be the (both left and right) inverse of _action_to_block
         return block_size - 1
 
-    def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+    def step(self, action: int) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         time_taken = 0
         if action != 0:
             start_time = process_time()
@@ -584,7 +584,7 @@ class VectorizedReductionEnvironment:
         return TensorDict(states_), TensorDict(infos_)
 
     def step(self, actions: torch.Tensor):
-        actions_list = actions.cpu().tolist()
+        actions_list = actions.cpu().int().tolist()
         for remote, action in zip(self.remotes, actions_list):
             remote.send(('step', action))
         results = [remote.recv() for remote in self.remotes]

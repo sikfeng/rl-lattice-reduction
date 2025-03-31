@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
     parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
+    parser.add_argument("--minibatch", type=int, default=1, help="Minibatch size for updating weights in PPO.")
 
     dist_group = parser.add_mutually_exclusive_group(required=True)
     dist_group.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
@@ -120,7 +121,7 @@ def main():
         batch_size=args.batch_size,
     )
 
-    ppo_config = PPOConfig()
+    ppo_config = PPOConfig(minibatch_size=args.minibatch)
     agent_config = AgentConfig(
         ppo_config=ppo_config,
         device=device,
