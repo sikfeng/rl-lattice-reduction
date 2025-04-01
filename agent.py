@@ -443,7 +443,7 @@ class DiscreteActorCritic(nn.Module):
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
         else:
-            indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
+            indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
             indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
             basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
             previous_effective_block_size = torch.min(
