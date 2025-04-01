@@ -1105,8 +1105,6 @@ class Agent(nn.Module):
             next_state,
             next_info["time"] - self.info["time"],
         )
-        self.state = next_state
-        self.info = next_info
 
         metrics = [{
             "episode/action": float(action[i]),
@@ -1118,6 +1116,9 @@ class Agent(nn.Module):
             "episode/action_log_prob": float(log_prob[i]),
             "episode/value_estimate": float(value[i]),
         } for i in range(reward.size(0))]
+
+        self.state = next_state
+        self.info = next_info
 
         return metrics
 
