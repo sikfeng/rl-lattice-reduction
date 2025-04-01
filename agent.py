@@ -1108,6 +1108,9 @@ class Agent(nn.Module):
 
         metrics = [{
             "episode/action": float(action[i]),
+            "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
+            "episode/block_size_rel": float("nan" if action[i] == 0 else (action[i] + 1) / self.state["basis_dim"][i]),
+            "episode/basis_dim": float(self.state["basis_dim"][i]),
             "episode/time_taken": float(next_info["time"][i] - self.info["time"][i]),
             "episode/time_penalty": float(rewards["time_penalty"][i]),
             "episode/length_reward": float(rewards["length_reward"][i]),
