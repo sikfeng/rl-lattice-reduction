@@ -85,7 +85,7 @@ class ContinuousActorCritic(nn.Module):
                  simulator: bool = True) -> None:
         super().__init__()
         self.simulator = simulator
-        self.action_dim = action_dim
+        #self.action_dim = action_dim # unused
         self.max_basis_dim = max_basis_dim
 
         self.gs_norms_hidden_dim = gs_norms_hidden_dim
@@ -658,7 +658,7 @@ class Agent(nn.Module):
         super().__init__()
         self.agent_config = agent_config
         self.device = self.agent_config.device
-        self.action_dim = self.agent_config.env_config.actions_n
+        self.action_dim = self.agent_config.env_config.net_dim
 
         if self.agent_config.pred_type == "continuous":
             self.actor_critic = ContinuousActorCritic(
