@@ -41,7 +41,7 @@ def evaluate(agent: Agent, val_dataloader, checkpoint_episode: int) -> Dict[str,
         }
 
         final_log = {f"val/{metric}": value for metric, value in avg_metrics.items()}
-        final_log["checkpoint_episode"] = episode_index
+        final_log["checkpoint_episode"] = checkpoint_episode
         wandb.log(final_log)
 
         avg_metrics["checkpoint_episode"] = checkpoint_episode
