@@ -342,9 +342,7 @@ class ReductionEnvConfig:
 
     def __post_init__(self):
         if self.max_steps is None:
-            self.max_steps = 2 * self.train_max_dim
-
-        self.actions_n = self.max_block_size
+            self.max_steps = 2 * self.net_dim
 
     def __str__(self):
         self_dict = vars(self)
@@ -416,7 +414,7 @@ class ReductionEnvironment:
 
     def _action_to_block(self, action: int) -> int:
         """Convert single action index to block size"""
-        assert np.all(np.array(action) < self.config.actions_n), f"Action {action} provided, but only {self.config.actions_n} actions available!"
+        assert np.all(np.array(action) < self.config.net_dim), f"Action {action} provided, but only {self.config.net_dim} actions available!"
 
         return np.array(action) + 1
 
