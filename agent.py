@@ -85,7 +85,6 @@ class ContinuousActorCritic(nn.Module):
                  simulator: bool = True) -> None:
         super().__init__()
         self.simulator = simulator
-        #self.action_dim = action_dim # unused
         self.max_basis_dim = max_basis_dim
 
         self.gs_norms_hidden_dim = gs_norms_hidden_dim
@@ -667,6 +666,7 @@ class Agent(nn.Module):
                 self.agent_config.dropout_p,
                 simulator=self.agent_config.simulator
             )
+            self.termination_temperature = torch.tensor([2.0], device=self.device)
         elif self.agent_config.pred_type == "discrete":
             self.actor_critic = DiscreteActorCritic(
                 self.agent_config.env_config.net_dim,
@@ -726,27 +726,29 @@ class Agent(nn.Module):
 
             if self.agent_config.pred_type == "continuous":
                 termination_prob, block_size_float = logits[:, 0], logits[:, 1]
-                terminate = torch.bernoulli(termination_prob).bool()
-                termination_log_probs = torch.where(
-                    terminate,
-                    torch.log(termination_prob + 1e-8),
-                    torch.log(1 - termination_prob + 1e-8)
-                )
+                terminate_dist = torch.distributions.RelaxedBernoulli(self.termination_temperature, termination_prob)
+                terminate = terminate_dist.rsample()
+                termination_log_probs = terminate_dist.log_prob(terminate)
 
                 block_size_dist = torch.distributions.Normal(
                     block_size_float,
                     self.actor_critic.get_std().expand_as(block_size_float)
                 )
                 cont_block = block_size_dist.rsample()
-                block_size = torch.round(cont_block).int() # block sizes are integers
-                block_size = torch.clamp(block_size, min=last_action + 1, max=basis_dim) # ensure block size is within valid range
+
+                with torch.no_grad():
+                    # discrete action for environment
+                    discrete_block = torch.round(cont_block).int()
+                    discrete_block = torch.clamp(discrete_block, min=last_action + 1, max=basis_dim)
+                # straight through estimator to preserve gradients
+                block_size = cont_block + (discrete_block.float() - cont_block).detach()
                 block_size_log_probs = block_size_dist.log_prob(cont_block)
 
                 # calculate log probs, and adjust for boundary
                 log_probs = termination_log_probs + (1 - terminate.float()) * block_size_log_probs
                 log_probs = log_probs - torch.log(1 - block_size_dist.cdf(last_action + 1) + block_size_dist.cdf(basis_dim))
 
-                action = torch.where(terminate, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
+                action = torch.where(terminate > 0.5, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
 
             elif self.agent_config.pred_type == "discrete":
                 # logits [batch_size, action_dim]
