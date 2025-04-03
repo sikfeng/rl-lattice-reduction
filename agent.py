@@ -726,27 +726,45 @@ class Agent(nn.Module):
 
             if self.agent_config.pred_type == "continuous":
                 termination_prob, block_size_float = logits[:, 0], logits[:, 1]
-                terminate_dist = torch.distributions.RelaxedBernoulli(self.termination_temperature, termination_prob)
-                terminate = terminate_dist.rsample()
-                termination_log_probs = terminate_dist.log_prob(terminate)
+                if self.training:
+                    terminate_dist = torch.distributions.RelaxedBernoulli(self.termination_temperature, termination_prob)
+                    terminate = terminate_dist.rsample()
+                    termination_log_probs = terminate_dist.log_prob(terminate)
 
-                block_size_dist = torch.distributions.Normal(
-                    block_size_float,
-                    self.actor_critic.get_std().expand_as(block_size_float)
+                    block_size_dist = torch.distributions.Normal(
+                        block_size_float,
+                        self.actor_critic.get_std().expand_as(block_size_float)
+                    )
+                    cont_block = block_size_dist.rsample()
+
+                    with torch.no_grad():
+                        # discrete action for environment
+                        discrete_block = torch.round(cont_block)
+                        discrete_block = torch.clamp(discrete_block, min=last_action + 1, max=basis_dim)
+                    # straight through estimator to preserve gradients
+                    block_size = cont_block + (discrete_block.float() - cont_block).detach()
+                    block_size_log_probs = block_size_dist.log_prob(cont_block)
+
+                else:
+                    terminate = termination_prob
+                    termination_log_probs = torch.log(termination_prob)
+
+                    block_size_dist = torch.distributions.Normal(
+                        block_size_float,
+                        self.actor_critic.get_std().expand_as(block_size_float)
+                    )
+                    block_size = torch.round(block_size_float)
+                    block_size_log_probs = block_size_dist.log_prob(block_size_float)
+
+                log_probs = torch.where(
+                    terminate > 0.5,
+                    termination_log_probs,  # only termination log prob matters
+                    (termination_log_probs + block_size_log_probs
+                    - torch.log(block_size_dist.cdf(basis_dim)
+                    - block_size_dist.cdf(last_action + 1))), # adjust for boundary
                 )
-                cont_block = block_size_dist.rsample()
-
-                with torch.no_grad():
-                    # discrete action for environment
-                    discrete_block = torch.round(cont_block).int()
-                    discrete_block = torch.clamp(discrete_block, min=last_action + 1, max=basis_dim)
-                # straight through estimator to preserve gradients
-                block_size = cont_block + (discrete_block.float() - cont_block).detach()
-                block_size_log_probs = block_size_dist.log_prob(cont_block)
-
-                # calculate log probs, and adjust for boundary
                 log_probs = termination_log_probs + (1 - terminate.float()) * block_size_log_probs
-                log_probs = log_probs - torch.log(1 - block_size_dist.cdf(last_action + 1) + block_size_dist.cdf(basis_dim))
+                log_probs = log_probs - torch.log(- block_size_dist.cdf(last_action + 1) + block_size_dist.cdf(basis_dim))
 
                 action = torch.where(terminate > 0.5, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
 
