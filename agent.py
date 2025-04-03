@@ -1,5 +1,4 @@
 from collections import defaultdict
-from dataclasses import asdict
 import math
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple, Union
@@ -151,7 +150,9 @@ class ContinuousActorCritic(nn.Module):
         )
 
         self.action_encoder = ActionEncoder(
-            self.max_basis_dim, self.action_embedding_dim)
+            self.max_basis_dim,
+            self.action_embedding_dim
+        )
 
         self.log_std = nn.Parameter(torch.rand(1))
 
@@ -176,9 +177,9 @@ class ContinuousActorCritic(nn.Module):
 
         if self.simulator:
             decoder_layer = nn.TransformerDecoderLayer(
-                d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
+                d_model=self.basis_embedding_hidden_dim + self.action_embedding_dim,
                 nhead=4,
-                dim_feedforward=4*self.gs_norms_hidden_dim,
+                dim_feedforward=4*self.basis_embedding_hidden_dim,
                 dropout=self.dropout_p,
                 batch_first=True
             )
@@ -187,8 +188,7 @@ class ContinuousActorCritic(nn.Module):
                 num_layers=3
             )
             self.time_simulator = nn.Sequential(
-                nn.Linear(self.combined_feature_dim +
-                          self.action_embedding_dim, self.combined_feature_dim),
+                nn.Linear(self.combined_feature_dim + self.action_embedding_dim, self.combined_feature_dim),
                 nn.LeakyReLU(),
                 nn.Dropout(p=self.dropout_p),
                 nn.Linear(self.combined_feature_dim, 1)
