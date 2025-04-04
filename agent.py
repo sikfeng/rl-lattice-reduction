@@ -852,35 +852,38 @@ class Agent(nn.Module):
             block_log_probs = block_dist.log_prob(actions[continue_mask].float()) # [continue_size]
 
             # Combine log probabilities
-            new_log_probs = torch.zeros_like(old_log_probs) # [batch_size, 1]
-            new_log_probs[terminate_mask] = term_log_probs[terminate_mask]
-            if continue_mask.any():
-                # Get log P(continue) for continue actions
-                log_p_continue = term_dist.log_prob(0.0)  # [batch_size]
-                log_p_continue = log_p_continue[continue_mask]  # [num_continue]
-
-                # Get log P(block_size) for continue actions
-                log_p_block = block_log_probs  # [num_continue]
-
-                new_log_probs[continue_mask] = (log_p_continue + log_p_block)
+            new_log_probs = term_log_probs
+            new_log_probs[continue_mask] = new_log_probs[continue_mask] + block_log_probs
 
             r"""
             The probability ratio is
-            \[ r_t(\theta) = \frac{\pi_{\theta}(a_t | s_t)}{\pi_{\theta_{\text{old}}}(a_t | s_t)} \]
+            \[
+            r_t(\theta) = \frac{\pi_{\theta}(a_t | s_t)}{\pi_{\theta_{\text{old}}}(a_t | s_t)}
+            \]
             This ratio measures how much the new policy differs from the old one.
             """
             ratios = (new_log_probs - old_log_probs).exp()
 
             r"""
             PPO modifies the standard policy gradient update using a clipped surrogate objective:
-            \[ L(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right) \right] \]
+            \[
+            L(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right) \right]
+            \]
             """
             surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.agent_config.ppo_config.clip_epsilon,1 + self.agent_config.ppo_config.clip_epsilon) * advantages
+            surr2 = torch.clamp(
+                ratios,
+                1 - self.agent_config.ppo_config.clip_epsilon,
+                1 + self.agent_config.ppo_config.clip_epsilon
+            ) * advantages
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
+
             term_entropy = term_dist.entropy().mean()
-            block_entropy = block_dist.entropy().mean() if continue_mask.any() else 0.0
+            block_entropy_all = torch.zeros(actions.size(0), device=self.device)
+            block_entropy_all[continue_mask] = block_dist.entropy()
+            block_entropy = block_entropy_all.mean()
+            # additivity property holds because termination and block size are independent
             entropy_loss = -(term_entropy + block_entropy)
 
             with torch.no_grad():
