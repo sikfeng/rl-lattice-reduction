@@ -1,5 +1,4 @@
 from collections import defaultdict
-from dataclasses import asdict
 import math
 from pathlib import Path
 from typing import Dict, Literal, Optional, Tuple, Union
@@ -19,6 +18,7 @@ from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 64):
         super().__init__()
+        self.max_len = max_len
 
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2)
@@ -37,106 +37,225 @@ class PositionalEncoding(nn.Module):
         return x
 
 
-class TransformerEncoder(nn.Module):
-    def __init__(self, input_dim: int, embedding_dim: int = 128, num_heads: int = 8, num_layers: int = 6, dropout_p: int = 0.1, max_len: int = 64):
+class GSNormEncoder(nn.Module):
+    def __init__(self, dropout_p: float, max_basis_dim: int, hidden_dim: int):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.max_len = max_len
 
-        self.pos_encoding = PositionalEncoding(embedding_dim, max_len=max_len)
-        self.input_projection = nn.Linear(input_dim, embedding_dim)
-        self.dropout = nn.Dropout(dropout_p)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim,
-            nhead=num_heads,
-            dim_feedforward=4*embedding_dim,
+        self.max_basis_dim = max_basis_dim
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+
+        self.input_projection = nn.Sequential(
+            nn.Linear(1, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+        self.pos_encoding = PositionalEncoding(
+            self.hidden_dim,
+            max_len=self.max_basis_dim,
+        )
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=4,
+            dim_feedforward=4*self.hidden_dim,
             dropout=dropout_p,
-            batch_first=True
+            batch_first=True,
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers
+        self.basis_transformer_encoder = nn.TransformerEncoder(
+            self.encoder_layer,
+            num_layers=3,
+        )
+        self.basis_encoder_projection = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
         )
 
-    def forward(self, x, attn_mask):
-        x = self.input_projection(x)
+    def forward(self, basis, attn_mask):
+        x = self.input_projection(basis)
         x = self.pos_encoding(x)
-        x = self.dropout(x)
+        x = self.basis_transformer_encoder(x, src_key_padding_mask=attn_mask)
+        x = self.basis_encoder_projection(x)
+        return x
 
-        encoder_output = self.transformer_encoder(
-            x, src_key_padding_mask=attn_mask)
-        return encoder_output
-
-    def generate_attn_mask(self, seq_lengths):
+    def _generate_attn_mask(self, seq_lengths):
         batch_size = seq_lengths.size(0)
         padding_mask = torch.zeros(
             batch_size,
-            self.max_len,
+            self.max_basis_dim,
             dtype=torch.bool,
-            device=seq_lengths.device)
+            device=seq_lengths.device,
+        )
+
         for i, length in enumerate(seq_lengths.int()):
-            padding_mask[i, :length] = True
-        return ~padding_mask
+            padding_mask[i, length:] = True
+
+        return padding_mask
 
 
-class ContinuousActorCritic(nn.Module):
-    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1,
-                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8,
-                 simulator: bool = True) -> None:
+class ActionEncoder(nn.Module):
+    def __init__(self, max_basis_dim, embedding_dim):
         super().__init__()
+
+        self.max_basis_dim = max_basis_dim
+        self.embedding_dim = embedding_dim
+
+        self.encoder = nn.Sequential(
+            nn.Linear(2, self.embedding_dim),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, action, basis_dim):
+        indices = torch.arange(self.max_basis_dim, device=action.device).unsqueeze(0)
+        # block size \(b\) corresponds to action id \(b - 1\)
+        indices = F.pad(indices, (0, self.max_basis_dim - indices.size(1)), value=0)
+        indices = indices.expand(-1, self.max_basis_dim)
+        basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
+        effective_block_size = torch.min(
+            action.unsqueeze(-1).expand(-1, self.max_basis_dim),
+            basis_dim_ - indices
+        ) + 1
+        relative_block_size = effective_block_size / basis_dim_
+        action_embedding = torch.stack([effective_block_size, relative_block_size], dim=1)
+        action_embedding = self.encoder(action_embedding.transpose(dim0=-2, dim1=-1))
+
+        return action_embedding
+
+
+class ContinuousPolicyHead(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        dropout_p: float = 0.1,
+        hidden_dim: int = 128,
+    ):
+        super().__init__()
+
+        self.feature_dim = feature_dim
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+
+        self.actor = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, 2),
+            nn.Sigmoid()
+        )
+
+    def forward(self, features, previous_action, basis_dim):
+        actor_output = self.actor(features)
+        absolute_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
+        actor_output = torch.stack([actor_output[:, 0], absolute_size], dim=1)
+
+        return actor_output
+
+
+class DiscretePolicyHead(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        action_dim: int,
+        dropout_p: float = 0.1,
+        hidden_dim: int = 128,
+    ):
+        super().__init__()
+
+        self.feature_dim = feature_dim
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+        self.action_dim = action_dim
+
+        self.actor = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, self.action_dim),
+            nn.Softmax(dim=-1) # should be removed
+        )
+
+    def forward(self, features, previous_action, basis_dim):
+        logits = self.actor(features)
+
+        # logits [batch_size, action_dim]
+        # basis_dim [batch_size]
+        # last_action [batch_size]
+        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0).expand_as(logits)
+        thresholds = previous_action.unsqueeze(1).expand_as(logits)
+        basis_dim_ = basis_dim.unsqueeze(1).expand_as(logits)
+        # mask entries which are False will be masked out
+        # indices >= thresholds are entries not smaller than previous block size
+        # indices <= basis_dim are entries with block size smaller than dim
+        # indices == 0 is the termination action
+        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0) # [batch_size, action_dim]
+        masked_logits = logits.masked_fill(~valid_mask, float('-inf'))
+
+        return masked_logits
+
+
+class ActorCritic(nn.Module):
+    def __init__(
+        self,
+        policy_type: str,
+        max_basis_dim: int,
+        dropout_p: float = 0.1,
+        gs_norms_embedding_hidden_dim: int = 128,
+        action_embedding_dim: int = 8,
+        simulator: bool = True,
+        actor_hidden_dim: int = 128,
+    ) -> None:
+        super().__init__()
+        self.policy_type = policy_type
         self.simulator = simulator
         self.max_basis_dim = max_basis_dim
 
-        self.gs_norms_hidden_dim = gs_norms_hidden_dim
+        self.gs_norms_embedding_hidden_dim = gs_norms_embedding_hidden_dim
         self.action_embedding_dim = action_embedding_dim
         self.dropout_p = dropout_p
 
-        self.gs_norms_encoder = TransformerEncoder(
-            input_dim=1,
-            embedding_dim=self.gs_norms_hidden_dim,
-            num_heads=4,
-            num_layers=3,
+        self.gs_norms_encoder = GSNormEncoder(
             dropout_p=self.dropout_p,
-            max_len=self.max_basis_dim
+            max_basis_dim=self.max_basis_dim,
+            hidden_dim=self.gs_norms_embedding_hidden_dim,
+        )
+        self.action_encoder = ActionEncoder(
+            max_basis_dim=self.max_basis_dim,
+            embedding_dim=self.action_embedding_dim,
         )
 
-        self.action_embedding = nn.Sequential(
-            nn.Linear(2, self.action_embedding_dim),
-            nn.LeakyReLU()
-        )
+        self.log_std = nn.Parameter(torch.ones(1))
 
-        self.log_std = nn.Parameter(torch.rand(1))
+        self.combined_feature_dim = self.gs_norms_embedding_hidden_dim + self.action_embedding_dim
+        self.actor_hidden_dim = actor_hidden_dim
 
-        self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
-        self.actor_hidden_dim = 128
-
-        # first output logit represents termination probability
-        # second output logit represents block size
-        self.actor = nn.Sequential(
-            nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, 2),
-            nn.Sigmoid()
-        )
+        if self.policy_type == "continuous":
+            self.actor = ContinuousPolicyHead(
+                feature_dim=self.combined_feature_dim,
+                dropout_p=self.dropout_p,
+                hidden_dim=self.actor_hidden_dim,
+            )
+        elif self.policy_type == "discrete":
+            self.actor = DiscretePolicyHead(
+                feature_dim=self.combined_feature_dim,
+                action_dim=self.max_basis_dim,
+                dropout_p=self.dropout_p,
+                hidden_dim=self.actor_hidden_dim,
+            )
+        else:
+            raise ValueError("self.policy_type is of unknown type: %s", self.policy_type)
         self.critic = nn.Sequential(
             nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(self.actor_hidden_dim, 1),
         )
 
         if self.simulator:
+            # TODO: try to let it be a separate class on its own
             decoder_layer = nn.TransformerDecoderLayer(
-                d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
+                d_model=self.gs_norms_embedding_hidden_dim + 2*self.action_embedding_dim,
                 nhead=4,
-                dim_feedforward=4*self.gs_norms_hidden_dim,
+                dim_feedforward=4*self.gs_norms_embedding_hidden_dim,
                 dropout=self.dropout_p,
                 batch_first=True
             )
@@ -144,20 +263,28 @@ class ContinuousActorCritic(nn.Module):
                 decoder_layer,
                 num_layers=3
             )
+            self.gs_norm_projection = nn.Sequential(
+                nn.Linear(self.gs_norms_embedding_hidden_dim + 2*self.action_embedding_dim, self.combined_feature_dim),
+                nn.LeakyReLU(),
+                nn.Dropout(p=self.dropout_p),
+                nn.Linear(self.combined_feature_dim, 1),
+            )
             self.time_simulator = nn.Sequential(
-                nn.Linear(self.combined_feature_dim +
-                        self.action_embedding_dim, self.combined_feature_dim),
+                nn.Linear(self.combined_feature_dim + self.action_embedding_dim, self.combined_feature_dim),
                 nn.LeakyReLU(),
                 nn.Dropout(p=self.dropout_p),
                 nn.Linear(self.combined_feature_dim, 1)
             )
 
     def get_std(self) -> torch.Tensor:
+        # TODO: either move into agent, as a generated output from policy network, or into policy network
         return torch.exp(self.log_std)
 
-    def forward(self, tensordict: TensorDict,
-                cached_states: Dict[str, torch.Tensor] = None
-                ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(
+        self,
+        tensordict: TensorDict,
+        cached_states: Dict[str, torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = dict()
         tensordict = self.preprocess_inputs(tensordict)
@@ -170,24 +297,13 @@ class ContinuousActorCritic(nn.Module):
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
             gs_norms_reshaped = gs_norms.unsqueeze(-1)
-            attn_mask = self.gs_norms_encoder.generate_attn_mask(basis_dim)
+            attn_mask = self.gs_norms_encoder._generate_attn_mask(basis_dim)
             gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, attn_mask)
 
-        # block size \(b\) corresponds to action id \(b - 1\)
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
         else:
-            indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
-            indices = F.pad(indices, (0, self.max_basis_dim - indices.size(1)), value=0)
-            indices = indices.expand(-1, self.max_basis_dim)
-            basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-            previous_effective_block_size = torch.min(
-                previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-                basis_dim_ - indices
-            ) + 1
-            previous_relative_block_size = previous_effective_block_size / basis_dim_
-            prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
-            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1))
+            prev_action_embedding = self.action_encoder(previous_action, basis_dim)
 
         combined = torch.cat([
             gs_norms_embedding.mean(dim=1),
@@ -197,11 +313,7 @@ class ContinuousActorCritic(nn.Module):
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
 
-        actor_output = self.actor(combined) # [terminate_prob, relative_size]
-        # linearly rescale relative_size from sigmoid output in (0, 1)
-        # to allowed block sizes (prev_action + 1, basis_dim)
-        absolute_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
-        actor_output = torch.stack([actor_output[:, 0], absolute_size], dim=1)
+        actor_output = self.actor(combined, previous_action, basis_dim)
         return actor_output, self.critic(combined).squeeze(-1), cached_states
 
     def simulate(self, current_gs_norms: torch.Tensor,
@@ -221,294 +333,16 @@ class ContinuousActorCritic(nn.Module):
         if "gs_norms_embedding" in cached_states:
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
-            gs_norms_3d = current_gs_norms.unsqueeze(-1) # [batch_size, basis_dim, 1]
-            gs_norms_embedding = self.gs_norms_encoder(
-                gs_norms_3d,
-                basis_dim,
-            )  # [batch_size, basis_dim, hidden_dim]
-
-        indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
-        indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
-        basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-        # block size \(b\) corresponds to action id \(b - 1\)
-        if "prev_action_embedding" in cached_states:
-            prev_action_embedding = cached_states["prev_action_embedding"]
-        else:
-            previous_effective_block_size = torch.min(
-                previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-                basis_dim_ - indices
-            ) + 1
-            previous_relative_block_size = previous_effective_block_size / basis_dim_
-            prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
-            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1))
-
-        current_effective_block_size = torch.min(
-            current_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-            basis_dim_ - indices
-        ) + 1
-        current_relative_block_size = current_effective_block_size / basis_dim_
-        current_action_embedding = torch.stack([current_effective_block_size, current_relative_block_size], dim=1)
-        current_action_embedding = self.action_embedding(current_action_embedding.transpose(dim0=-2, dim1=-1))
-
-        time_sim_context = torch.cat([
-            gs_norms_embedding.mean(dim=1),
-            prev_action_embedding.mean(dim=1),
-            current_action_embedding.mean(dim=1)
-        ], dim=1)
-        simulated_time = self.time_simulator(time_sim_context).exp()
-
-        gs_norm_sim_context = torch.cat([
-            gs_norms_embedding,
-            current_action_embedding
-        ], dim=2)
-
-        if target_gs_norms is None:
-            # auto-regressive generation
-            simulated_gs_norms = torch.zeros(batch_size, self.max_basis_dim, device=device)
-            generated_sequence = torch.zeros(batch_size, 1, 1, device=device)
-
-            for i in range(basis_dim.max()):
-                tgt = self.gs_norms_encoder.input_projection(generated_sequence)
-                tgt = self.gs_norms_encoder.pos_encoding(tgt)
-
-                # Create causal mask for autoregressive generation
-                tgt_mask = None
-                if i > 0:
-                    tgt_mask = torch.triu(torch.ones(
-                        i+1, i+1, device=device) * float('-inf'), diagonal=1)
-
-                tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
-                decoder_output = self.gs_norm_simulator(
-                    tgt=tgt,
-                    memory=gs_norm_sim_context,
-                    tgt_mask=tgt_mask
-                )
-                # [batch_size, 1, hidden_dim]
-                current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
-
-                # Project to get the norm value, tie with input projection weights
-                current_prediction = (current_prediction
-                                    - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-                predicted_norm = F.linear(
-                    current_prediction,
-                    self.gs_norms_encoder.input_projection.weight.t(),
-                    bias=None
-                )
-
-                simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
-
-                if i < basis_dim.max() - 1:
-                    generated_sequence = torch.cat([
-                        generated_sequence,
-                        predicted_norm.detach()
-                    ], dim=1)
-        else:
-            tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
-            tgt = self.gs_norms_encoder.pos_encoding(tgt)
-
-            seq_len = target_gs_norms.size(1)
-            tgt_mask = torch.triu(torch.ones(seq_len, seq_len, device=device) * float('-inf'), diagonal=1)
-
-            tgt = torch.cat([tgt, current_action_embedding[:, :seq_len, :]], dim=2)
-            decoder_output = self.gs_norm_simulator(
-                tgt=tgt,
-                memory=gs_norm_sim_context,
-                tgt_mask=tgt_mask
-            )
-
-            current_prediction = decoder_output[:, :, :self.gs_norms_hidden_dim]
-            current_prediction = (current_prediction
-                                  - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-
-            simulated_gs_norms = F.linear(
-                current_prediction,
-                self.gs_norms_encoder.input_projection.weight.t(),
-                bias=None
-            ).squeeze(-1)
-
-        cached_states["gs_norms_embedding"] = gs_norms_embedding
-        cached_states["prev_action_embedding"] = prev_action_embedding
-
-        return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
-
-    def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
-        basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
-        basis_dim = tensordict["basis_dim"]  # [batch_size]
-        _, max_basis_dim, _ = basis.shape
-
-        mask = torch.arange(max_basis_dim, device=basis.device) < basis_dim.view(-1, 1, 1)
-        masked_basis = basis * mask
-
-        _, R = torch.linalg.qr(masked_basis)
-        diag = torch.diagonal(R, dim1=-2, dim2=-1).abs()
-
-        gs_norms = diag * mask.squeeze(1)
-
-        return TensorDict({
-            "gs_norms": gs_norms,
-            "last_action": tensordict["last_action"],
-            "basis_dim": basis_dim
-        }, batch_size=[])
-
-class DiscreteActorCritic(nn.Module):
-    def __init__(self, max_basis_dim: int, action_dim: int, dropout_p: float = 0.1,
-                 gs_norms_hidden_dim: int = 128, action_embedding_dim: int = 8,
-                 simulator: bool = True) -> None:
-        super().__init__()
-        self.simulator = simulator
-        self.action_dim = action_dim
-        self.max_basis_dim = max_basis_dim
-
-        self.gs_norms_hidden_dim = gs_norms_hidden_dim
-        self.action_embedding_dim = action_embedding_dim
-        self.dropout_p = dropout_p
-
-        self.gs_norms_encoder = TransformerEncoder(
-            input_dim=1,
-            embedding_dim=self.gs_norms_hidden_dim,
-            num_heads=4,
-            num_layers=3,
-            dropout_p=self.dropout_p,
-            max_len=self.max_basis_dim
-        )
-
-        self.action_embedding = nn.Sequential(
-            nn.Linear(2, self.action_embedding_dim),
-            nn.LeakyReLU()
-        )
-
-        self.combined_feature_dim = self.gs_norms_hidden_dim + self.action_embedding_dim
-        self.actor_hidden_dim = 128
-
-        self.actor = nn.Sequential(
-            nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, action_dim),
-            nn.Softmax(dim=-1)
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, self.actor_hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.actor_hidden_dim, 1),
-        )
-
-        if self.simulator:
-            decoder_layer = nn.TransformerDecoderLayer(
-                d_model=self.gs_norms_hidden_dim + self.action_embedding_dim,
-                nhead=4,
-                dim_feedforward=4*self.gs_norms_hidden_dim,
-                dropout=self.dropout_p,
-                batch_first=True
-            )
-            self.gs_norm_simulator = nn.TransformerDecoder(
-                decoder_layer,
-                num_layers=3
-            )
-            self.time_simulator = nn.Sequential(
-                nn.Linear(self.combined_feature_dim +
-                        self.action_embedding_dim, self.combined_feature_dim),
-                nn.LeakyReLU(),
-                nn.Dropout(p=self.dropout_p),
-                nn.Linear(self.combined_feature_dim, 1)
-            )
-
-    def forward(self, tensordict: TensorDict,
-                cached_states: Dict[str, torch.Tensor] = None
-                ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        if cached_states is None:
-            cached_states = dict()
-        tensordict = self.preprocess_inputs(tensordict)
-
-        gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
-        basis_dim = tensordict["basis_dim"]  # [batch_size]
-        previous_action = tensordict["last_action"]
-
-        if "gs_norms_embedding" in cached_states:
-            gs_norms_embedding = cached_states["gs_norms_embedding"]
-        else:
-            gs_norms_reshaped = gs_norms.unsqueeze(-1)
-            attn_mask = self.gs_norms_encoder.generate_attn_mask(basis_dim)
+            gs_norms_reshaped = current_gs_norms.unsqueeze(-1)
+            attn_mask = self.gs_norms_encoder._generate_attn_mask(basis_dim)
             gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, attn_mask)
 
-        # block size \(b\) corresponds to action id \(b - 1\)
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
         else:
-            indices = torch.arange(self.max_basis_dim, device=previous_action.device).unsqueeze(0)
-            indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
-            basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-            previous_effective_block_size = torch.min(
-                previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-                basis_dim_ - indices
-            ) + 1
-            previous_relative_block_size = previous_effective_block_size / basis_dim_
-            prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
-            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1)).squeeze(1)
+            prev_action_embedding = self.action_encoder(previous_action, basis_dim)
 
-        combined = torch.cat([
-            gs_norms_embedding.mean(dim=1),
-            prev_action_embedding.mean(dim=1)
-        ], dim=1)
-
-        cached_states["gs_norms_embedding"] = gs_norms_embedding
-        cached_states["prev_action_embedding"] = prev_action_embedding
-
-        # Forward through actor and critic heads
-        return self.actor(combined), self.critic(combined).squeeze(-1), cached_states
-
-    def simulate(self, current_gs_norms: torch.Tensor,
-                 previous_action: torch.Tensor,
-                 basis_dim: torch.Tensor, current_action: torch.Tensor,
-                 cached_states: Dict[str, torch.Tensor] = None,
-                 target_gs_norms: Optional[torch.Tensor] = None,
-                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        if not self.simulator:
-            raise RuntimeError("ActorCritic model not initialized to simulate.")
-
-        if cached_states is None:
-            cached_states = dict()
-        batch_size = current_gs_norms.size(0)
-        device = current_gs_norms.device
-
-        if "gs_norms_embedding" in cached_states:
-            gs_norms_embedding = cached_states["gs_norms_embedding"]
-        else:
-            gs_norms_3d = current_gs_norms.unsqueeze(-1) # [batch_size, basis_dim, 1]
-            gs_norms_embedding = self.gs_norms_encoder(
-                gs_norms_3d,
-                basis_dim,
-            )  # [batch_size, basis_dim, hidden_dim]
-
-        indices = torch.arange(self.action_dim, device=previous_action.device).unsqueeze(0)
-        indices = indices.expand(basis_dim.size(0), self.max_basis_dim)
-        basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-        # block size \(b\) corresponds to action id \(b - 1\)
-        if "prev_action_embedding" in cached_states:
-            prev_action_embedding = cached_states["prev_action_embedding"]
-        else:
-            previous_effective_block_size = torch.min(
-                previous_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-                basis_dim_ - indices
-            ) + 1
-            previous_relative_block_size = previous_effective_block_size / basis_dim_
-            prev_action_embedding = torch.stack([previous_effective_block_size, previous_relative_block_size], dim=1)
-            prev_action_embedding = self.action_embedding(prev_action_embedding.transpose(dim0=-2, dim1=-1))
-
-        current_effective_block_size = torch.min(
-            current_action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-            basis_dim_ - indices
-        ) + 1
-        current_relative_block_size = current_effective_block_size / basis_dim_
-        current_action_embedding = torch.stack([current_effective_block_size, current_relative_block_size], dim=1)
-        current_action_embedding = self.action_embedding(current_action_embedding.transpose(dim0=-2, dim1=-1))
+        current_action_embedding = self.action_encoder(current_action, basis_dim)
 
         time_sim_context = torch.cat([
             gs_norms_embedding.mean(dim=1),
@@ -519,6 +353,7 @@ class DiscreteActorCritic(nn.Module):
 
         gs_norm_sim_context = torch.cat([
             gs_norms_embedding,
+            prev_action_embedding,
             current_action_embedding
         ], dim=2)
 
@@ -530,61 +365,46 @@ class DiscreteActorCritic(nn.Module):
             for i in range(basis_dim.max()):
                 tgt = self.gs_norms_encoder.input_projection(generated_sequence)
                 tgt = self.gs_norms_encoder.pos_encoding(tgt)
+                tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
 
                 # Create causal mask for autoregressive generation
                 tgt_mask = None
                 if i > 0:
-                    tgt_mask = torch.triu(torch.ones(
-                        i+1, i+1, device=device) * float('-inf'), diagonal=1)
+                    tgt_mask = torch.triu(torch.ones(i+1, i+1, device=device) * float('-inf'), diagonal=1)
 
-                tgt = torch.cat([tgt, current_action_embedding[:, :i + 1, :]], dim=2)
                 decoder_output = self.gs_norm_simulator(
                     tgt=tgt,
                     memory=gs_norm_sim_context,
                     tgt_mask=tgt_mask
                 )
                 # [batch_size, 1, hidden_dim]
-                current_prediction = decoder_output[:, -1:, :self.gs_norms_hidden_dim]
-
-                # Project to get the norm value, tie with input projection weights
-                current_prediction = (current_prediction
-                                    - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-                predicted_norm = F.linear(
-                    current_prediction,
-                    self.gs_norms_encoder.input_projection.weight.t(),
-                    bias=None
-                )
-
-                simulated_gs_norms[:, i] = predicted_norm.squeeze(-1).squeeze(-1)
+                current_hidden = decoder_output[:, -1:, :]
+                predicted_gs_norm = self.gs_norm_projection(current_hidden)
+                simulated_gs_norms[:, i, :] = predicted_gs_norm.squeeze(1)
 
                 if i < basis_dim.max() - 1:
                     generated_sequence = torch.cat([
                         generated_sequence,
-                        predicted_norm.detach()
+                        current_gs_norms.detach()
                     ], dim=1)
         else:
             tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
             tgt = self.gs_norms_encoder.pos_encoding(tgt)
-
             seq_len = target_gs_norms.size(1)
+            tgt = torch.cat([
+                tgt,
+                prev_action_embedding[:, :seq_len, :],
+                current_action_embedding[:, :seq_len, :]
+            ], dim=2)
             tgt_mask = torch.triu(torch.ones(seq_len, seq_len, device=device) * float('-inf'), diagonal=1)
 
-            tgt = torch.cat([tgt, current_action_embedding[:, :seq_len, :]], dim=2)
             decoder_output = self.gs_norm_simulator(
                 tgt=tgt,
                 memory=gs_norm_sim_context,
                 tgt_mask=tgt_mask
             )
 
-            current_prediction = decoder_output[:, :, :self.gs_norms_hidden_dim]
-            current_prediction = (current_prediction
-                                  - self.gs_norms_encoder.input_projection.bias.unsqueeze(0).unsqueeze(0))
-
-            simulated_gs_norms = F.linear(
-                current_prediction,
-                self.gs_norms_encoder.input_projection.weight.t(),
-                bias=None
-            ).squeeze(-1)
+            simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
@@ -652,27 +472,19 @@ class AgentConfig:
         self_dict = vars(self)
         return f"AgentConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
 
+
 class Agent(nn.Module):
     def __init__(self, agent_config: AgentConfig) -> None:
         super().__init__()
         self.agent_config = agent_config
         self.device = self.agent_config.device
-        self.action_dim = self.agent_config.env_config.net_dim
 
-        if self.agent_config.pred_type == "continuous":
-            self.actor_critic = ContinuousActorCritic(
-                self.agent_config.env_config.net_dim,
-                self.action_dim,
-                self.agent_config.dropout_p,
-                simulator=self.agent_config.simulator
-            )
-        elif self.agent_config.pred_type == "discrete":
-            self.actor_critic = DiscreteActorCritic(
-                self.agent_config.env_config.net_dim,
-                self.action_dim,
-                self.agent_config.dropout_p,
-                simulator=self.agent_config.simulator
-            )
+        self.actor_critic = ActorCritic(
+            policy_type=self.agent_config.pred_type,
+            max_basis_dim=self.agent_config.env_config.net_dim,
+            dropout_p=self.agent_config.dropout_p,
+            simulator=self.agent_config.simulator
+        )
 
         self.mse_loss = nn.MSELoss()
         self.optimizer = optim.AdamW(
@@ -766,20 +578,7 @@ class Agent(nn.Module):
                 action = torch.where(terminate > 0.5, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
 
             elif self.agent_config.pred_type == "discrete":
-                # logits [batch_size, action_dim]
-                # basis_dim [batch_size]
-                # last_action [batch_size]
-                indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0).expand_as(logits)
-                thresholds = last_action.unsqueeze(1).expand_as(logits)
-                basis_dim_ = basis_dim.unsqueeze(1).expand_as(logits)
-                # mask entries which are False will be masked out
-                # indices >= thresholds are entries not smaller than previous block size
-                # indices <= basis_dim are entries with block size smaller than dim
-                # indices == 0 is the termination action
-                mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0) # [batch_size, action_dim]
-                masked_logits = logits.masked_fill(~mask, float('-inf'))
-
-                dist = torch.distributions.Categorical(logits=masked_logits)
+                dist = torch.distributions.Categorical(logits=logits)
                 action = dist.sample()
                 log_probs = dist.log_prob(action)
 
