@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description="Reinforcement Learning for BKZ Lattice Reduction.")
 
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
-    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes.")
+    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes. Set to a negative value for infinite training")
     parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
     parser.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
     parser.add_argument("--net-dim", type=int, required=True, help="Maximum input dimension for neural network architecture.")
@@ -106,7 +106,8 @@ def main():
         logging.info('No GPU available, using the CPU instead.')
         device = torch.device("cpu")
 
-    wandb.init(project="bkz-rl-training", name=f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}")
+    run_name = f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
+    wandb.init(project="bkz-rl-training", name=run_name)
 
     env_config = ReductionEnvConfig(
         net_dim=args.net_dim,
@@ -135,10 +136,19 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    agent.save(checkpoint_dir / "pretrained.pth")
+    agent.save(checkpoint_dir / "episodes_0.pth")
+    logging.info("Saved pretrained model as episodes_0.pth")
 
     agent.train()
-    for episode in (tqdm(range(args.episodes), dynamic_ncols=True)):
+
+    episode = 0
+    progress_bar = tqdm(
+        desc="Training episodes",
+        dynamic_ncols=True,
+        initial=0,
+        total=args.episodes if args.episodes >= 0 else None
+    )
+    while args.episodes < 0 or episode < args.episodes:
         episode_metrics = agent.collect_experiences()
         update_metrics = agent.update()
 
@@ -147,8 +157,19 @@ def main():
 
         wandb.log(update_metrics)
 
-        if (episode + 1) % args.chkpt_interval == 0:
+        episode += 1
+        progress_bar.update(1)
+        progress_bar.set_description(f"Training episode: {episode}")
+
+        if episode % args.chkpt_interval == 0 and episode != args.episodes:
             agent.save(checkpoint_dir / f"episodes_{episode}.pth")
+            logging.info(f"Saved checkpoint at episode {episode}")
+
+    progress_bar.close()
+
+    logging.info(f"Training ended at episode {episode}")
+    agent.save(checkpoint_dir / f"episodes_{episode}.pth")
+    logging.info(f"Saved final model at episode {episode}")
 
 
 if __name__ == "__main__":

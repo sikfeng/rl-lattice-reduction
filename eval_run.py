@@ -112,28 +112,27 @@ def main():
     )
 
     run_dir = Path(args.run_dir)
+
+    # Create reports directory if it doesn't exist
+    reports_dir = run_dir / "reports"
+    reports_dir.mkdir(exist_ok=True)
+
     checkpoint_files = []
-    pretrained_file = None
 
     # Collect and sort checkpoint files
-    for pth_file in run_dir.glob('*.pth'):
-        if pth_file.name == 'pretrained.pth':
-            pretrained_file = pth_file
-        else:
-            stem = pth_file.stem
-            if stem.startswith('episodes_'):
-                try:
-                    episode = int(stem.split('_')[1])
-                    checkpoint_files.append((episode, pth_file))
-                except (IndexError, ValueError):
-                    logging.warning(f"Skipping invalid file: {pth_file}")
+    for pth_file in run_dir.glob("episodes_*.pth"):
+        try:
+            episode = int(pth_file.stem.split('_')[1])
+            checkpoint_files.append((episode, pth_file))
+        except (IndexError, ValueError):
+            logging.warning(f"Skipping invalid file: {pth_file}")
+
     checkpoint_files.sort()
-    if pretrained_file:
-        checkpoint_files = [(0, pretrained_file)] + checkpoint_files
 
     # Process each checkpoint in order
     for checkpoint_episode, pth_file in checkpoint_files:
-        yaml_file = pth_file.with_suffix('.yaml')
+        yaml_filename = f"episode_{checkpoint_episode}_dim_{args.dim}.yaml"
+        yaml_file = reports_dir / yaml_filename
         if yaml_file.exists():
             logging.info(f"Skipping {pth_file} as {yaml_file} exists.")
             continue
