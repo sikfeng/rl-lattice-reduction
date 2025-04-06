@@ -21,8 +21,9 @@ class PositionalEncoding(nn.Module):
         self.max_len = max_len
 
         position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2)
-                             * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
+        )
         pe = torch.zeros(1, max_len, d_model)
         pe[0, :, 0::2] = torch.sin(position * div_term)
         pe[0, :, 1::2] = torch.cos(position * div_term)
@@ -33,7 +34,7 @@ class PositionalEncoding(nn.Module):
         Arguments:
             x: Tensor, shape ``[batch_size, seq_len, embedding_dim]``
         """
-        x = x + self.pe[:, :x.size(1), :]
+        x = x + self.pe[:, : x.size(1), :]
         return x
 
 
@@ -57,7 +58,7 @@ class GSNormEncoder(nn.Module):
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=4,
-            dim_feedforward=4*self.hidden_dim,
+            dim_feedforward=4 * self.hidden_dim,
             dropout=dropout_p,
             batch_first=True,
         )
@@ -111,12 +112,17 @@ class ActionEncoder(nn.Module):
         indices = F.pad(indices, (0, self.max_basis_dim - indices.size(1)), value=0)
         indices = indices.expand(-1, self.max_basis_dim)
         basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-        effective_block_size = torch.min(
-            action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-            basis_dim_ - indices
-        ) + 1
+        effective_block_size = (
+            torch.min(
+                action.unsqueeze(-1).expand(-1, self.max_basis_dim),
+                basis_dim_ - indices,
+            )
+            + 1
+        )
         relative_block_size = effective_block_size / basis_dim_
-        action_embedding = torch.stack([effective_block_size, relative_block_size], dim=1)
+        action_embedding = torch.stack(
+            [effective_block_size, relative_block_size], dim=1
+        )
         action_embedding = self.encoder(action_embedding.transpose(dim0=-2, dim1=-1))
 
         return action_embedding
@@ -140,12 +146,20 @@ class ContinuousPolicyHead(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(self.hidden_dim, 2),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
-    def forward(self, features, previous_action, basis_dim):
+    def forward(
+        self,
+        features: torch.Tensor,
+        previous_action: torch.Tensor,
+        basis_dim: torch.Tensor,
+    ) -> torch.Tensor:
         actor_output = self.actor(features)
-        absolute_size = (1 - actor_output[:, 1]) * (previous_action + 1) + actor_output[:, 1] * basis_dim
+        #absolute_size = ((1 - actor_output[:, 1]) * (previous_action + 1)
+        #                 + actor_output[:, 1] * basis_dim)
+        absolute_size = ((previous_action + 1)
+                         + (1 - actor_output[:, 1]) * (basis_dim - previous_action))
         actor_output = torch.stack([actor_output[:, 0], absolute_size], dim=1)
 
         return actor_output
@@ -171,24 +185,33 @@ class DiscretePolicyHead(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(self.hidden_dim, self.action_dim),
-            nn.Softmax(dim=-1) # should be removed
+            nn.Softmax(dim=-1),  # should be removed
         )
 
-    def forward(self, features, previous_action, basis_dim):
+    def forward(
+        self,
+        features: torch.Tensor,
+        previous_action: torch.Tensor,
+        basis_dim: torch.Tensor,
+    ) -> torch.Tensor:
         logits = self.actor(features)
 
         # logits [batch_size, action_dim]
         # basis_dim [batch_size]
         # last_action [batch_size]
-        indices = torch.arange(self.action_dim, device=logits.device).unsqueeze(0).expand_as(logits)
+        indices = (
+            torch.arange(self.action_dim, device=logits.device)
+            .unsqueeze(0)
+            .expand_as(logits)
+        )
         thresholds = previous_action.unsqueeze(1).expand_as(logits)
         basis_dim_ = basis_dim.unsqueeze(1).expand_as(logits)
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
         # indices == 0 is the termination action
-        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0) # [batch_size, action_dim]
-        masked_logits = logits.masked_fill(~valid_mask, float('-inf'))
+        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0)  # [batch_size, action_dim]
+        masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
 
         return masked_logits
 
@@ -209,9 +232,10 @@ class Simulator(nn.Module):
         self.hidden_dim = hidden_dim
 
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.gs_norms_encoder.hidden_dim + 2*self.action_encoder.embedding_dim,
+            d_model=self.gs_norms_encoder.hidden_dim
+                    + 2 * self.action_encoder.embedding_dim,
             nhead=4,
-            dim_feedforward=4*self.hidden_dim,
+            dim_feedforward=4 * self.hidden_dim,
             dropout=self.dropout_p,
             batch_first=True,
         )
@@ -220,13 +244,20 @@ class Simulator(nn.Module):
             num_layers=3,
         )
         self.gs_norm_projection = nn.Sequential(
-            nn.Linear(self.gs_norms_encoder.hidden_dim + 2*self.action_encoder.embedding_dim, self.hidden_dim),
+            nn.Linear(
+                self.gs_norms_encoder.hidden_dim
+                + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
         )
         self.time_simulator = nn.Sequential(
-            nn.Linear(self.hidden_dim + 2*self.action_encoder.embedding_dim, self.hidden_dim),
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
@@ -244,7 +275,6 @@ class Simulator(nn.Module):
         if cached_states is None:
             cached_states = {}
 
-        batch_size, max_dim = current_gs_norms.shape
         device = current_gs_norms.device
 
         if "gs_norms_embedding" in cached_states:
@@ -261,11 +291,14 @@ class Simulator(nn.Module):
 
         current_action_embedding = self.action_encoder(current_action, basis_dim)
 
-        time_sim_context = torch.cat([
-            gs_norms_embedding.mean(dim=1),
-            prev_action_embedding.mean(dim=1),
-            current_action_embedding.mean(dim=1)
-        ], dim=1)
+        time_sim_context = torch.cat(
+            [
+                gs_norms_embedding.mean(dim=1),
+                prev_action_embedding.mean(dim=1),
+                current_action_embedding.mean(dim=1),
+            ],
+            dim=1,
+        )
         simulated_time = self.time_simulator(time_sim_context).exp()
 
         if target_gs_norms is None:
@@ -274,7 +307,7 @@ class Simulator(nn.Module):
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
                 basis_dim=basis_dim,
-                device=device
+                device=device,
             )
         else:
             simulated_gs_norms = self._teacher_forced_generation(
@@ -282,8 +315,7 @@ class Simulator(nn.Module):
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
                 target_gs_norms=target_gs_norms,
-                basis_dim=basis_dim,
-                device=device
+                device=device,
             )
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
@@ -292,38 +324,53 @@ class Simulator(nn.Module):
         return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
 
     def _autoregressive_generation(
-            self, gs_norms_embedding, prev_action_embedding, current_action_embedding, basis_dim, device
-        ):
+        self,
+        gs_norms_embedding: torch.Tensor,
+        prev_action_embedding: torch.Tensor,
+        current_action_embedding: torch.Tensor,
+        basis_dim: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
         # buffers for storing generated output
-        simulated_gs_norms = torch.zeros(gs_norms_embedding.size(0), gs_norms_embedding.size(1), device=device)
-        generated_sequence = torch.zeros(gs_norms_embedding.size(0), 1, 1, device=device)
+        simulated_gs_norms = torch.zeros(
+            (gs_norms_embedding.size(0), gs_norms_embedding.size(1)),
+            device=device,
+        )
+        generated_sequence = torch.zeros(
+            (gs_norms_embedding.size(0), 1, 1),
+            device=device,
+        )
 
         # encoder features
-        gs_norm_sim_context = torch.cat([
-            gs_norms_embedding,
-            prev_action_embedding,
-            current_action_embedding
-        ], dim=2)
+        gs_norm_sim_context = torch.cat(
+            [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
+        )
 
         for i in range(basis_dim.max()):
             # embedding features for sequence generated so far
             tgt = self.gs_norms_encoder.input_projection(generated_sequence)
             tgt = self.gs_norms_encoder.pos_encoding(tgt)
-            tgt = torch.cat([
-                tgt,
-                prev_action_embedding[:, :i+1, :],
-                current_action_embedding[:, :i+1, :]
-            ], dim=2)
+            tgt = torch.cat(
+                [
+                    tgt,
+                    prev_action_embedding[:, : i + 1, :],
+                    current_action_embedding[:, : i + 1, :],
+                ],
+                dim=2,
+            )
 
             # causal mask for autoregressive generation
             tgt_mask = None
             if i > 0:
-                tgt_mask = torch.triu(torch.ones(i+1, i+1, device=device) * float('-inf'), diagonal=1)
+                tgt_mask = torch.triu(
+                    torch.ones(i + 1, i + 1, device=device) * float("-inf"),
+                    diagonal=1
+                )
 
             decoder_output = self.gs_norm_simulator(
                 tgt=tgt,
                 memory=gs_norm_sim_context,
-                tgt_mask=tgt_mask
+                tgt_mask=tgt_mask,
             )
             # [batch_size, 1, hidden_dim]
             current_hidden = decoder_output[:, -1:, :]
@@ -331,25 +378,39 @@ class Simulator(nn.Module):
             simulated_gs_norms[:, i] = predicted_gs_norm.squeeze(1).squeeze(1)
 
             if i < basis_dim.max() - 1:
-                generated_sequence = torch.cat([
-                    generated_sequence,
-                    predicted_gs_norm.detach(),
-                ], dim=1)
+                generated_sequence = torch.cat(
+                    [
+                        generated_sequence,
+                        predicted_gs_norm.detach(),
+                    ],
+                    dim=1,
+                )
 
         return predicted_gs_norm
 
     def _teacher_forced_generation(
-            self, gs_norms_embedding, prev_action_embedding, current_action_embedding, target_gs_norms, basis_dim, device
-        ):
+        self,
+        gs_norms_embedding: torch.Tensor,
+        prev_action_embedding: torch.Tensor,
+        current_action_embedding: torch.Tensor,
+        target_gs_norms: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
         tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
         tgt = self.gs_norms_encoder.pos_encoding(tgt)
         seq_len = target_gs_norms.size(1)
-        tgt = torch.cat([
-            tgt,
-            prev_action_embedding[:, :seq_len, :],
-            current_action_embedding[:, :seq_len, :]
-        ], dim=2)
-        tgt_mask = torch.triu(torch.ones(seq_len, seq_len, device=device) * float('-inf'), diagonal=1)
+        tgt = torch.cat(
+            [
+                tgt,
+                prev_action_embedding[:, :seq_len, :],
+                current_action_embedding[:, :seq_len, :],
+            ],
+            dim=2,
+        )
+        tgt_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=device) * float("-inf"),
+            diagonal=1
+        )
 
         gs_norm_sim_context = torch.cat([
             gs_norms_embedding,
@@ -398,7 +459,10 @@ class ActorCritic(nn.Module):
 
         self.log_std = nn.Parameter(torch.ones(1))
 
-        self.combined_feature_dim = self.gs_norms_embedding_hidden_dim + self.action_embedding_dim
+        self.combined_feature_dim = (
+            self.gs_norms_embedding_hidden_dim
+            + self.action_embedding_dim
+        )
         self.actor_hidden_dim = actor_hidden_dim
 
         if self.policy_type == "continuous":
@@ -415,7 +479,9 @@ class ActorCritic(nn.Module):
                 hidden_dim=self.actor_hidden_dim,
             )
         else:
-            raise ValueError("self.policy_type is of unknown type: %s", self.policy_type)
+            raise ValueError(
+                "self.policy_type is of unknown type: %s", self.policy_type
+            )
         self.critic = nn.Sequential(
             nn.Linear(self.combined_feature_dim, self.actor_hidden_dim),
             nn.LeakyReLU(),
@@ -476,21 +542,27 @@ class ActorCritic(nn.Module):
 
         gs_norms = diag * mask.squeeze(1)
 
-        return TensorDict({
-            "gs_norms": gs_norms,
-            "last_action": tensordict["last_action"],
-            "basis_dim": basis_dim
-        }, batch_size=[])
+        return TensorDict(
+            {
+                "gs_norms": gs_norms,
+                "last_action": tensordict["last_action"],
+                "basis_dim": basis_dim,
+            },
+            batch_size=[],
+        )
 
 
 class PPOConfig:
-    def __init__(self, lr: float = 3e-4,
-                 gamma: float = 0.99,
-                 gae_lambda: float = 0.95,
-                 clip_epsilon: float = 0.2,
-                 clip_grad_norm: float = 0.5,
-                 epochs: int = 4,
-                 minibatch_size: int = 64) -> None:
+    def __init__(
+        self,
+        lr: float = 3e-4,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_epsilon: float = 0.2,
+        clip_grad_norm: float = 0.5,
+        epochs: int = 4,
+        minibatch_size: int = 64,
+    ) -> None:
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -505,14 +577,17 @@ class PPOConfig:
 
 
 class AgentConfig:
-    def __init__(self, ppo_config: PPOConfig,
-                 device: Union[torch.device, str],
-                 batch_size: int = 1,
-                 dropout_p: float = 0.1,
-                 env_config: Optional[ReductionEnvConfig] = None,
-                 simulator: bool = False,
-                 simulator_hidden_dim: int = 128,
-                 pred_type: str = Union[Literal["continuous"], Literal["discrete"]]) -> None:
+    def __init__(
+        self,
+        ppo_config: PPOConfig,
+        device: Union[torch.device, str],
+        batch_size: int = 1,
+        dropout_p: float = 0.1,
+        env_config: Optional[ReductionEnvConfig] = None,
+        simulator: bool = False,
+        simulator_hidden_dim: int = 128,
+        pred_type: str = Union[Literal["continuous"], Literal["discrete"]],
+    ) -> None:
         self.ppo_config = ppo_config
         self.device = device
         self.batch_size = batch_size
@@ -551,17 +626,18 @@ class Agent(nn.Module):
         self.mse_loss = nn.MSELoss()
         self.optimizer = optim.AdamW(
             self.actor_critic.parameters(),
-            lr=self.agent_config.ppo_config.lr
+            lr=self.agent_config.ppo_config.lr,
         )
 
         def sample_transform(tensordict: TensorDict) -> TensorDict:
             tensordict = TensorDict(
-                {key: tensordict[key].flatten(0, 1) for key in tensordict.keys()})
+                {key: tensordict[key].flatten(0, 1) for key in tensordict.keys()}
+            )
             return tensordict
 
         self.replay_buffer = ReplayBuffer(
             storage=ListStorage(),
-            transform=sample_transform
+            transform=sample_transform,
         )
 
         self.batch_size = self.agent_config.batch_size
@@ -570,12 +646,15 @@ class Agent(nn.Module):
         self.state, self.info = self.env.reset()
         self.state = TensorDict(self.state, batch_size=[]).to(self.device)
 
-    def simulate(self, current_gs_norms: torch.Tensor,
-                 previous_action: torch.Tensor,
-                 basis_dim: torch.Tensor, current_action: torch.Tensor,
-                 cached_states: Dict[str, torch.Tensor] = None,
-                 target_gs_norms: Optional[torch.Tensor] = None,
-                 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    def simulate(
+        self,
+        current_gs_norms: torch.Tensor,
+        previous_action: torch.Tensor,
+        basis_dim: torch.Tensor,
+        current_action: torch.Tensor,
+        cached_states: Dict[str, torch.Tensor] = None,
+        target_gs_norms: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if self.simulator is None:
             raise RuntimeError("ActorCritic model not initialized to simulate.")
 
@@ -588,25 +667,39 @@ class Agent(nn.Module):
             target_gs_norms=target_gs_norms,
         )
 
-    def store_transition(self, state, action, log_prob, reward, done, next_state, time_taken):
-        td = TensorDict({
-            "state": {
-                "basis": state["basis"],
-                "last_action": state["last_action"],
-                "basis_dim": state["basis_dim"]
+    def store_transition(
+        self,
+        state: TensorDict[str, torch.Tensor],
+        action: torch.Tensor,
+        log_prob: torch.Tensor,
+        reward: torch.Tensor,
+        done: torch.Tensor,
+        next_state: TensorDict[str, torch.Tensor],
+        time_taken: torch.Tensor,
+    ):
+        td = TensorDict(
+            {
+                "state": {
+                    "basis": state["basis"],
+                    "last_action": state["last_action"],
+                    "basis_dim": state["basis_dim"],
+                },
+                "action": action,
+                "log_prob": log_prob,
+                "reward": reward,
+                "done": done,
+                "next_state": {
+                    "basis": next_state["basis"],
+                    "last_action": next_state["last_action"],
+                    "basis_dim": next_state["basis_dim"],
+                },
+                "time_taken": time_taken,
             },
-            "action": action,
-            "log_prob": log_prob,
-            "reward": reward,
-            "done": done,
-            "next_state": {
-                "basis": next_state["basis"],
-                "last_action": next_state["last_action"],
-                "basis_dim": next_state["basis_dim"]
-            },
-            "time_taken": time_taken
-        }, batch_size=[action.size(0)])
-        self.replay_buffer.extend(list(td.split([1 for _ in range(td.batch_size[0])], dim=0)))
+            batch_size=[action.size(0)],
+        )
+        self.replay_buffer.extend(
+            [*td.split(np.ones(td.batch_size[0], dtype=int).tolist(), dim=0)]
+        )
 
     def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
         with torch.no_grad():
@@ -623,16 +716,22 @@ class Agent(nn.Module):
 
                     block_size_dist = torch.distributions.Normal(
                         block_size_float,
-                        self.actor_critic.get_std().expand_as(block_size_float)
+                        self.actor_critic.get_std().expand_as(block_size_float),
                     )
                     cont_block = block_size_dist.rsample()
 
                     with torch.no_grad():
-                        # discrete action for environment
-                        discrete_block = torch.round(cont_block)
-                        discrete_block = torch.clamp(discrete_block, min=last_action + 1, max=basis_dim)
+                        # discrete block size for environment
+                        discrete_block = torch.clamp(
+                            torch.round(cont_block),
+                            min=last_action + 1,
+                            max=basis_dim,
+                        )
                     # straight through estimator to preserve gradients
-                    block_size = cont_block + (discrete_block.float() - cont_block).detach()
+                    # unnecessary for PPO, but necessary for SAC
+                    block_size = (
+                        cont_block + (discrete_block.float() - cont_block).detach()
+                    )
                     block_size_log_probs = block_size_dist.log_prob(block_size)
 
                 else:
@@ -641,20 +740,27 @@ class Agent(nn.Module):
 
                     block_size_dist = torch.distributions.Normal(
                         block_size_float,
-                        self.actor_critic.get_std().expand_as(block_size_float)
+                        self.actor_critic.get_std().expand_as(block_size_float),
                     )
                     block_size = torch.round(block_size_float)
                     block_size_log_probs = block_size_dist.log_prob(block_size_float)
 
                 log_probs = torch.where(
                     terminate > 0.5,
-                    termination_log_probs, # only termination log prob matters
-                    termination_log_probs + block_size_log_probs - torch.log(
-                        block_size_dist.cdf(basis_dim + 0.5) - block_size_dist.cdf(last_action + 0.5) # adjust for boundary
+                    termination_log_probs,  # only termination log prob matters
+                    termination_log_probs
+                    + block_size_log_probs
+                    - torch.log(
+                        block_size_dist.cdf(basis_dim + 0.5)
+                        - block_size_dist.cdf(last_action + 0.5)  # adjust for boundary
                     ),
                 )
 
-                action = torch.where(terminate > 0.5, torch.tensor(0, device=block_size.device), block_size - 1) # consolidate action ids
+                action = torch.where(
+                    terminate > 0.5,
+                    torch.tensor(0, device=block_size.device),
+                    block_size - 1,
+                )  # consolidate action ids
 
             elif self.agent_config.pred_type == "discrete":
                 dist = torch.distributions.Categorical(logits=logits)
@@ -697,7 +803,7 @@ class Agent(nn.Module):
             state_value=values.unsqueeze(1),
             next_state_value=next_values.unsqueeze(1),
             reward=rewards.unsqueeze(1),
-            done=dones.unsqueeze(1)
+            done=dones.unsqueeze(1),
         )
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
@@ -715,23 +821,27 @@ class Agent(nn.Module):
             # term_probs, block_preds, values [batch_size]
 
             # Create action masks
-            terminate_mask = (actions == 0) # [batch_size]
-            continue_mask = ~terminate_mask # [batch_size]
+            terminate_mask = actions == 0  # [batch_size]
+            continue_mask = ~terminate_mask  # [batch_size]
 
             # Calculate termination log probs (Bernoulli distribution)
             term_dist = torch.distributions.Bernoulli(probs=term_probs)
-            term_log_probs = term_dist.log_prob(terminate_mask.float()) # [batch_size]
+            term_log_probs = term_dist.log_prob(terminate_mask.float())  # [batch_size]
 
             # Calculate block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
                 loc=block_preds[continue_mask],
-                scale=self.actor_critic.get_std().expand_as(block_preds[continue_mask])
+                scale=self.actor_critic.get_std().expand_as(block_preds[continue_mask]),
             )
-            block_log_probs = block_dist.log_prob(actions[continue_mask].float()) # [continue_size]
+            block_log_probs = block_dist.log_prob(
+                actions[continue_mask].float()
+            )  # [continue_size]
 
             # Combine log probabilities
             new_log_probs = term_log_probs
-            new_log_probs[continue_mask] = new_log_probs[continue_mask] + block_log_probs
+            new_log_probs[continue_mask] = (
+                new_log_probs[continue_mask] + block_log_probs
+            )
 
             r"""
             The probability ratio is
@@ -749,11 +859,14 @@ class Agent(nn.Module):
             \]
             """
             surr1 = ratios * advantages
-            surr2 = torch.clamp(
-                ratios,
-                1 - self.agent_config.ppo_config.clip_epsilon,
-                1 + self.agent_config.ppo_config.clip_epsilon
-            ) * advantages
+            surr2 = (
+                torch.clamp(
+                    ratios,
+                    1 - self.agent_config.ppo_config.clip_epsilon,
+                    1 + self.agent_config.ppo_config.clip_epsilon,
+                )
+                * advantages
+            )
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
 
@@ -765,16 +878,18 @@ class Agent(nn.Module):
             entropy_loss = -(term_entropy + block_entropy)
 
             with torch.no_grad():
-                term_loss = -torch.min(
-                    surr1[terminate_mask],
-                    surr2[terminate_mask]
-                ).mean() if terminate_mask.any() else torch.tensor(0.0)
+                term_loss = (
+                    -torch.min(surr1[terminate_mask], surr2[terminate_mask]).mean()
+                    if terminate_mask.any()
+                    else torch.tensor(0.0)
+                )
 
                 # Block size component loss
-                block_loss = -torch.min(
-                    surr1[continue_mask],
-                    surr2[continue_mask]
-                ).mean() if continue_mask.any() else torch.tensor(0.0)
+                block_loss = (
+                    -torch.min(surr1[continue_mask], surr2[continue_mask]).mean()
+                    if continue_mask.any()
+                    else torch.tensor(0.0)
+                )
 
             loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
@@ -791,8 +906,14 @@ class Agent(nn.Module):
                 )
 
                 # Calculate simulator losses
-                gs_norm_sim_loss = self.mse_loss(predicted_gs_norms, next_features["gs_norms"])
-                time_sim_loss = self.mse_loss(predicted_time, batch["time_taken"])
+                gs_norm_sim_loss = self.mse_loss(
+                    predicted_gs_norms,
+                    next_features["gs_norms"],
+                )
+                time_sim_loss = self.mse_loss(
+                    predicted_time,
+                    batch["time_taken"]
+                )
 
                 loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
 
@@ -801,7 +922,7 @@ class Agent(nn.Module):
 
             torch.nn.utils.clip_grad_norm_(
                 self.actor_critic.parameters(),
-                self.agent_config.ppo_config.clip_grad_norm
+                self.agent_config.ppo_config.clip_grad_norm,
             )
             self.optimizer.step()
 
@@ -839,10 +960,12 @@ class Agent(nn.Module):
             "update/advantages_std": advantages.std().item(),
         }
         if self.agent_config.simulator:
-            metrics.update({
-                "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
-                "update/avg_time_sim_loss": np.mean(time_sim_losses)
-            })
+            metrics.update(
+                {
+                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
+                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
+                }
+            )
         return metrics
 
     def _update_discrete(self) -> Dict[str, float]:
@@ -879,7 +1002,7 @@ class Agent(nn.Module):
             state_value=values.unsqueeze(1),
             next_state_value=next_values.unsqueeze(1),
             reward=rewards.unsqueeze(1),
-            done=dones.unsqueeze(1)
+            done=dones.unsqueeze(1),
         )
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
@@ -907,7 +1030,14 @@ class Agent(nn.Module):
             \[ L(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right) \right] \]
             """
             surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.agent_config.ppo_config.clip_epsilon,1 + self.agent_config.ppo_config.clip_epsilon) * advantages
+            surr2 = (
+                torch.clamp(
+                    ratios,
+                    1 - self.agent_config.ppo_config.clip_epsilon,
+                    1 + self.agent_config.ppo_config.clip_epsilon,
+                )
+                * advantages
+            )
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
             entropy_loss = -dist.entropy().mean()
@@ -927,8 +1057,14 @@ class Agent(nn.Module):
                 )
 
                 # Calculate simulator losses
-                gs_norm_sim_loss = self.mse_loss(predicted_gs_norms, next_features["gs_norms"])
-                time_sim_loss = self.mse_loss(predicted_time, batch["time_taken"])
+                gs_norm_sim_loss = self.mse_loss(
+                    predicted_gs_norms,
+                    next_features["gs_norms"],
+                )
+                time_sim_loss = self.mse_loss(
+                    predicted_time,
+                    batch["time_taken"],
+                )
 
                 loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
 
@@ -937,7 +1073,7 @@ class Agent(nn.Module):
 
             torch.nn.utils.clip_grad_norm_(
                 self.actor_critic.parameters(),
-                self.agent_config.ppo_config.clip_grad_norm
+                self.agent_config.ppo_config.clip_grad_norm,
             )
             self.optimizer.step()
 
@@ -970,10 +1106,12 @@ class Agent(nn.Module):
             "update/advantages_std": advantages.std().item(),
         }
         if self.agent_config.simulator:
-            metrics.update({
-                "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
-                "update/avg_time_sim_loss": np.mean(time_sim_losses)
-            })
+            metrics.update(
+                {
+                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
+                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
+                }
+            )
         return metrics
 
     def update(self) -> Dict[str, float]:
@@ -992,8 +1130,9 @@ class Agent(nn.Module):
         reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
         done = terminated | truncated
 
-        next_state = TensorDict({k: v.to(self.device)
-                                for k, v in next_state.items()}, batch_size=[])
+        next_state = TensorDict(
+            {k: v.to(self.device) for k, v in next_state.items()}, batch_size=[]
+        )
         self.store_transition(
             self.state,
             action,
@@ -1004,26 +1143,38 @@ class Agent(nn.Module):
             next_info["time"] - self.info["time"],
         )
 
-        metrics = [{
-            "episode/action": float(action[i]),
-            "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
-            "episode/block_size_rel": float("nan" if action[i] == 0 else (action[i] + 1) / self.state["basis_dim"][i]),
-            "episode/basis_dim": float(self.state["basis_dim"][i]),
-            "episode/time_taken": float(next_info["time"][i] - self.info["time"][i]),
-            "episode/time_penalty": float(rewards["time_penalty"][i]),
-            "episode/length_reward": float(rewards["length_reward"][i]),
-            "episode/defect_reward": float(rewards["defect_reward"][i]),
-            "episode/total_reward": float(reward[i]),
-            "episode/action_log_prob": float(log_prob[i]),
-            "episode/value_estimate": float(value[i]),
-        } for i in range(reward.size(0))]
+        metrics = [
+            {
+                "episode/action": float(action[i]),
+                "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
+                "episode/block_size_rel": float(
+                    "nan"
+                    if action[i] == 0
+                    else (action[i] + 1) / self.state["basis_dim"][i]
+                ),
+                "episode/basis_dim": float(self.state["basis_dim"][i]),
+                "episode/time_taken": float(
+                    next_info["time"][i] - self.info["time"][i]
+                ),
+                "episode/time_penalty": float(rewards["time_penalty"][i]),
+                "episode/length_reward": float(rewards["length_reward"][i]),
+                "episode/defect_reward": float(rewards["defect_reward"][i]),
+                "episode/total_reward": float(reward[i]),
+                "episode/action_log_prob": float(log_prob[i]),
+                "episode/value_estimate": float(value[i]),
+            }
+            for i in range(reward.size(0))
+        ]
 
         self.state = next_state
         self.info = next_info
 
         return metrics
 
-    def evaluate(self, batch: TensorDict) -> Dict:
+    def evaluate(
+        self,
+        batch: TensorDict[str, Union[torch.Tensor, TensorDict[str, torch.Tensor]]]
+    ) -> Dict:
         self.eval()
         state, info = self.env.reset(options=batch)
         log_defect_history = [info["log_defect"].item()]
@@ -1056,7 +1207,8 @@ class Agent(nn.Module):
             "shortest_length": min(shortest_length_history),
             "success": float(min(shortest_length_history) < 1.05),
             "time": sum(time_history),
-            "length_improvement": shortest_length_history[0] - min(shortest_length_history)
+            "length_improvement": shortest_length_history[0]
+                                  - min(shortest_length_history),
         }
         metrics.update(episode_rewards)
 
@@ -1064,8 +1216,8 @@ class Agent(nn.Module):
 
     def save(self, path: Path):
         checkpoint = {
-            'state_dict': self.state_dict(),
-            'agent_config': self.agent_config,
+            "state_dict": self.state_dict(),
+            "agent_config": self.agent_config,
         }
         torch.save(checkpoint, path)
         return
