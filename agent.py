@@ -739,7 +739,7 @@ class Agent(nn.Module):
                 "time_taken": time_taken,
             },
             batch_size=[action.size(0)],
-        )
+        ).detach()
         self.replay_buffer.extend(
             [*td.split(np.ones(td.batch_size[0], dtype=int).tolist(), dim=0)]
         )
