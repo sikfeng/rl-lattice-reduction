@@ -252,6 +252,7 @@ class Simulator(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
+            nn.Softplus(),
         )
         self.time_simulator = nn.Sequential(
             nn.Linear(
@@ -261,6 +262,7 @@ class Simulator(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
+            nn.Softplus(),
         )
 
     def forward(
@@ -299,7 +301,7 @@ class Simulator(nn.Module):
             ],
             dim=1,
         )
-        simulated_time = self.time_simulator(time_sim_context).exp()
+        simulated_time = self.time_simulator(time_sim_context)
 
         if target_gs_norms is None:
             simulated_gs_norms = self._autoregressive_generation(
@@ -426,6 +428,35 @@ class Simulator(nn.Module):
 
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
         return simulated_gs_norms
+
+
+class InverseModel(nn.Module):
+    def __init__(
+        self,
+        input_embedding_dim: int,
+        hidden_dim: int,
+        dropout_p: float = 0.1,
+    ):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(2 * input_embedding_dim, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(dropout_p),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        current_embedding: torch.Tensor,
+        next_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        combined = torch.cat(
+            [
+                current_embedding.flatten(start_dim=1),
+                next_embedding.flatten(start_dim=1)
+            ], dim=1)
+        return self.model(combined)
 
 
 class ActorCritic(nn.Module):
@@ -562,6 +593,7 @@ class PPOConfig:
         clip_grad_norm: float = 0.5,
         epochs: int = 4,
         minibatch_size: int = 64,
+        sim_lr: float = 1e-5,
     ) -> None:
         self.lr = lr
         self.gamma = gamma
@@ -570,6 +602,7 @@ class PPOConfig:
         self.clip_grad_norm = clip_grad_norm
         self.epochs = epochs
         self.minibatch_size = minibatch_size
+        self.sim_lr = sim_lr
 
     def __str__(self):
         self_dict = vars(self)
@@ -613,6 +646,10 @@ class Agent(nn.Module):
             max_basis_dim=self.agent_config.env_config.net_dim,
             dropout_p=self.agent_config.dropout_p,
         )
+        self.optimizer = optim.AdamW(
+            self.actor_critic.parameters(),
+            lr=self.agent_config.ppo_config.lr,
+        )
 
         self.simulator = None
         if self.agent_config.simulator:
@@ -622,12 +659,18 @@ class Agent(nn.Module):
                 dropout_p=self.agent_config.dropout_p,
                 hidden_dim=self.agent_config.simulator_hidden_dim,
             )
+            self.inverse_model = InverseModel(
+                input_embedding_dim=self.actor_critic.gs_norms_encoder.hidden_dim
+                                    * self.agent_config.env_config.net_dim,
+                hidden_dim=self.actor_critic.gs_norms_encoder.hidden_dim,
+                dropout_p=self.agent_config.dropout_p,
+            )
+            self.sim_optimizer = optim.AdamW(
+                [*self.simulator.parameters()] + [*self.inverse_model.parameters()],
+                lr=self.agent_config.ppo_config.sim_lr,
+            )
 
         self.mse_loss = nn.MSELoss()
-        self.optimizer = optim.AdamW(
-            self.actor_critic.parameters(),
-            lr=self.agent_config.ppo_config.lr,
-        )
 
         def sample_transform(tensordict: TensorDict) -> TensorDict:
             tensordict = TensorDict(
@@ -814,6 +857,7 @@ class Agent(nn.Module):
         if self.agent_config.simulator:
             gs_norm_sim_losses = []
             time_sim_losses = []
+            inverse_losses = []
 
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
@@ -891,46 +935,46 @@ class Agent(nn.Module):
                     else torch.tensor(0.0)
                 )
 
-            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
+            actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
+            simulator_loss = 0.0
             if self.agent_config.simulator:
-                current_features = self.actor_critic.preprocess_inputs(states)
-                next_features = self.actor_critic.preprocess_inputs(next_states)
-                predicted_gs_norms, predicted_time, _ = self.simulate(
-                    current_gs_norms=current_features["gs_norms"],
-                    previous_action=current_features["last_action"],
-                    basis_dim=current_features["basis_dim"],
-                    current_action=actions.float(),
-                    cached_states=cached_states,
-                    target_gs_norms=next_features["gs_norms"],
+                simulator_losses = self.get_sim_loss(
+                    actions,
+                    states,
+                    next_states,
+                    batch["time_taken"],
                 )
-
-                # Calculate simulator losses
-                gs_norm_sim_loss = self.mse_loss(
-                    predicted_gs_norms,
-                    next_features["gs_norms"],
-                )
-                time_sim_loss = self.mse_loss(
-                    predicted_time,
-                    batch["time_taken"]
-                )
-
-                loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"]
+                time_sim_loss = simulator_losses["time_loss"]
+                inverse_loss = simulator_losses["inverse_loss"]
+                simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
-            loss.backward()
+            self.sim_optimizer.zero_grad()
 
+            actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 self.actor_critic.parameters(),
                 self.agent_config.ppo_config.clip_grad_norm,
             )
+
+            if self.agent_config.simulator:
+                simulator_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    [*self.actor_critic.parameters(), *self.simulator.parameters()],
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
+
             self.optimizer.step()
+            if self.agent_config.simulator:
+                self.sim_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
             entropy_losses.append(entropy_loss.item())
-            total_losses.append(loss.item())
+            total_losses.append(actor_critic_loss.item())
 
             term_losses.append(term_loss.item())
             block_losses.append(block_loss.item())
@@ -938,6 +982,7 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
+                inverse_losses.append(inverse_loss.item())
 
             clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
                        | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
@@ -958,6 +1003,7 @@ class Agent(nn.Module):
             "update/approx_kl": np.mean(approx_kl),
             "update/advantages_mean": advantages.mean().item(),
             "update/advantages_std": advantages.std().item(),
+            "update/clip_fraction": np.mean(clip_fractions),
         }
         if self.agent_config.simulator:
             metrics.update(
@@ -1113,6 +1159,55 @@ class Agent(nn.Module):
                 }
             )
         return metrics
+
+    def get_sim_loss(
+        self,
+        actions: torch.Tensor,
+        states: torch.Tensor,
+        next_states: torch.Tensor,
+        time_taken: torch.Tensor,
+    ) -> Dict[str, float]:
+        current_features = self.actor_critic.preprocess_inputs(states)
+        next_features = self.actor_critic.preprocess_inputs(next_states)
+        predicted_gs_norms, predicted_time, _ = self.simulate(
+            current_gs_norms=current_features["gs_norms"],
+            previous_action=current_features["last_action"],
+            basis_dim=current_features["basis_dim"],
+            current_action=actions.float(),
+            target_gs_norms=next_features["gs_norms"],
+        )
+
+        gs_norm_sim_loss = self.mse_loss(
+            predicted_gs_norms,
+            next_features["gs_norms"],
+        )
+        time_sim_loss = self.mse_loss(
+            predicted_time,
+            time_taken
+        )
+
+        attn_mask = self.actor_critic.gs_norms_encoder._generate_attn_mask(states["basis_dim"])
+        current_embedding = self.actor_critic.gs_norms_encoder(
+            current_features["gs_norms"].unsqueeze(-1),
+            attn_mask
+        )
+        next_embedding = self.actor_critic.gs_norms_encoder(
+            next_features["gs_norms"].unsqueeze(-1),
+            attn_mask
+        )
+
+        inverse_action = self.inverse_model(
+            current_embedding,
+            next_embedding,
+        ).squeeze(1) * states["basis_dim"]
+        inverse_loss = self.mse_loss(inverse_action, actions.float())
+
+        losses = {
+            "gs_norm_loss": gs_norm_sim_loss,
+            "inverse_loss": inverse_loss,
+            "time_loss": time_sim_loss,
+        }
+        return losses
 
     def update(self) -> Dict[str, float]:
         if len(self.replay_buffer) < self.agent_config.ppo_config.minibatch_size:
