@@ -851,6 +851,7 @@ class Agent(nn.Module):
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
         term_losses, block_losses = [], []
+        term_entropies, block_entropies = [], []
         clip_fractions = []
         approx_kls = []
 
@@ -937,7 +938,6 @@ class Agent(nn.Module):
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
-            simulator_loss = 0.0
             if self.agent_config.simulator:
                 simulator_losses = self.get_sim_loss(
                     actions,
@@ -980,6 +980,9 @@ class Agent(nn.Module):
             term_losses.append(term_loss.item())
             block_losses.append(block_loss.item())
 
+            term_entropies.append(term_entropy.item())
+            block_entropies.append(block_entropy.item())
+
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
@@ -999,6 +1002,8 @@ class Agent(nn.Module):
             "update/avg_critic_loss": np.mean(critic_losses),
             "update/avg_term_loss": np.mean(term_losses),
             "update/avg_block_loss": np.mean(block_losses),
+            "update/avg_term_entropy": np.mean(term_entropies),
+            "update/avg_block_entropy": np.mean(block_entropies),
             "update/avg_entropy": np.mean(entropy_losses),
             "update/total_loss": np.mean(total_losses),
             "update/approx_kl": np.mean(approx_kl),
@@ -1011,6 +1016,7 @@ class Agent(nn.Module):
                 {
                     "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
+                    "update/avg_inverse_loss": np.mean(inverse_losses),
                 }
             )
         return metrics
@@ -1059,6 +1065,7 @@ class Agent(nn.Module):
         if self.agent_config.simulator:
             gs_norm_sim_losses = []
             time_sim_losses = []
+            inverse_losses = []
 
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
@@ -1091,38 +1098,39 @@ class Agent(nn.Module):
 
             loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
+            actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
             if self.agent_config.simulator:
-                current_features = self.actor_critic.preprocess_inputs(states)
-                next_features = self.actor_critic.preprocess_inputs(next_states)
-                predicted_gs_norms, predicted_time, _ = self.simulate(
-                    current_gs_norms=current_features["gs_norms"],
-                    previous_action=current_features["last_action"],
-                    basis_dim=current_features["basis_dim"],
-                    current_action=actions.float(),
-                    cached_states=cached_states,
-                    target_gs_norms=next_features["gs_norms"],
-                )
-
-                # Calculate simulator losses
-                gs_norm_sim_loss = self.mse_loss(
-                    predicted_gs_norms,
-                    next_features["gs_norms"],
-                )
-                time_sim_loss = self.mse_loss(
-                    predicted_time,
+                simulator_losses = self.get_sim_loss(
+                    actions,
+                    states,
+                    next_states,
                     batch["time_taken"],
                 )
-
-                loss = loss + 0.1 * gs_norm_sim_loss + 0.1 * time_sim_loss
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"]
+                time_sim_loss = simulator_losses["time_loss"]
+                inverse_loss = simulator_losses["inverse_loss"]
+                simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
-            loss.backward()
+            if self.agent_config.simulator:
+                self.sim_optimizer.zero_grad()
 
+            actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 self.actor_critic.parameters(),
                 self.agent_config.ppo_config.clip_grad_norm,
             )
+
+            if self.agent_config.simulator:
+                simulator_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    [*self.actor_critic.parameters(), *self.simulator.parameters()],
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
+
             self.optimizer.step()
+            if self.agent_config.simulator:
+                self.sim_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
@@ -1133,6 +1141,7 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
+                inverse_losses.append(inverse_loss.item())
 
             clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
                        | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
@@ -1151,12 +1160,14 @@ class Agent(nn.Module):
             "update/approx_kl": np.mean(approx_kl),
             "update/advantages_mean": advantages.mean().item(),
             "update/advantages_std": advantages.std().item(),
+            "update/clip_fraction": np.mean(clip_fractions),
         }
         if self.agent_config.simulator:
             metrics.update(
                 {
                     "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
+                    "update/avg_inverse_loss": np.mean(inverse_losses),
                 }
             )
         return metrics
