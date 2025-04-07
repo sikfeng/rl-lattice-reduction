@@ -951,7 +951,8 @@ class Agent(nn.Module):
                 simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
-            self.sim_optimizer.zero_grad()
+            if self.agent_config.simulator:
+                self.sim_optimizer.zero_grad()
 
             actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
