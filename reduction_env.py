@@ -304,7 +304,8 @@ class ReductionEnvironment:
         return {
             "log_defect": self.log_defect_history[-1],
             "shortest_length": self.shortest_length_history[-1],
-            "time": sum(self.time_history),
+            #"time": sum(self.time_history),
+            "time": self.enum_history[-1], # temp hack
         }
 
     def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:

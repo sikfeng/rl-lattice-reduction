@@ -586,7 +586,7 @@ class ActorCritic(nn.Module):
 class PPOConfig:
     def __init__(
         self,
-        lr: float = 3e-4,
+        lr: float = 1e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
