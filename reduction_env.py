@@ -64,73 +64,6 @@ class BKZReduction(object):
         else:
             self.lll_obj = L
 
-    def __call__(self, params, min_row=0, max_row=-1, tracer=False):
-        """Run the BKZ algorithm with parameters `param`.
-
-        :param params: BKZ parameters
-        :param min_row: start processing in this row
-        :param max_row: stop processing in this row (exclusive)
-        :param tracer: see ``normalize_tracer`` for accepted values
-
-
-        TESTS::
-
-            >>> from fpylll import *
-            >>> A = IntegerMatrix.random(60, "qary", k=30, q=127)
-            >>> from fpylll.algorithms.bkz import BKZReduction
-            >>> bkz = BKZReduction(A)
-            >>> _ = bkz(BKZ.EasyParam(10), tracer=True); bkz.trace is None
-            False
-            >>> _ = bkz(BKZ.EasyParam(10), tracer=False); bkz.trace is None
-            True
-
-        """
-
-        tracer = normalize_tracer(tracer)
-
-        try:
-            label = params["name"]
-        except KeyError:
-            label = "bkz"
-
-        if not isinstance(tracer, Tracer):
-            tracer = tracer(
-                self,
-                root_label=label,
-                verbosity=params.flags & BKZ.VERBOSE,
-                start_clocks=True,
-                max_depth=2,
-            )
-
-        if params.flags & BKZ.AUTO_ABORT:
-            auto_abort = BKZ.AutoAbort(self.M, self.A.nrows)
-
-        cputime_start = process_time()
-
-        with tracer.context("lll"):
-            self.lll_obj()
-
-        i = 0
-        while True:
-            with tracer.context("tour", i, dump_gso=params.flags & BKZ.DUMP_GSO):
-                clean = self.tour(params, min_row, max_row, tracer)
-            i += 1
-            if clean or params.block_size >= self.A.nrows:
-                break
-            if (params.flags & BKZ.AUTO_ABORT) and auto_abort.test_abort():
-                break
-            if (params.flags & BKZ.MAX_LOOPS) and i >= params.max_loops:
-                break
-            if (params.flags & BKZ.MAX_TIME) and process_time() - cputime_start >= params.max_time:
-                break
-
-        tracer.exit()
-        try:
-            self.trace = tracer.trace
-        except AttributeError:
-            self.trace = None
-        return clean
-
     def tour(self, params, min_row=0, max_row=-1, tracer=dummy_tracer):
         """One BKZ loop over all indices.
 
@@ -405,6 +338,7 @@ class ReductionEnvironment:
         self.log_defect_history = []
         self.shortest_length_history = []
         self.time_history = []
+        self.enum_history = [] # store number of nodes visited by enumeration
         # initial basis is always LLL = BKZ-2 reduced
         self._update_history(action=1, time_taken=0)
 
@@ -454,8 +388,14 @@ class ReductionEnvironment:
         self.action_history.append(action)
         self.time_history.append(time_taken)
         self.log_defect_history.append(self.compute_log_defect(self.basis))
-        self.shortest_length_history.append(
-            min(v.norm() for v in self.basis) / self.gh)
+        self.shortest_length_history.append(min(v.norm() for v in self.basis) / self.gh)
+
+        enum_nodes = None
+        for child in self.tracer.trace.children:
+            if child.label == "enumeration":
+                enum_nodes = child.data["#enum"]
+                break
+        self.enum_history.append(enum_nodes - sum(self.enum_history) if enum_nodes is not None else 0)
 
     def _compute_reward(self) -> float:
         # Initialize reward components dictionary for better tracking
@@ -468,7 +408,8 @@ class ReductionEnvironment:
         if self.action_history[-1] == 0:
             return rewards
 
-        rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
+        #rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
+        rewards["time_penalty"] = self.config.time_penalty_weight * 1e-6 * self.enum_history[-1]
         rewards["defect_reward"] = (self.config.defect_reward_weight
                                     * (self.log_defect_history[-2] - self.log_defect_history[-1]))
         rewards["length_reward"] = (self.config.length_reward_weight
