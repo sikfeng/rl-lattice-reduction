@@ -848,6 +848,7 @@ class Agent(nn.Module):
             reward=rewards.unsqueeze(1),
             done=dones.unsqueeze(1),
         )
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
         term_losses, block_losses = [], []
