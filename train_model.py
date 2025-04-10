@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
     parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
-    parser.add_argument("--minibatch", type=int, default=1, help="Minibatch size for updating weights in PPO.")
+    parser.add_argument("--minibatch", type=int, default=64, help="Minibatch size for updating weights in PPO.")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for PPO.")
 
     dist_group = parser.add_mutually_exclusive_group(required=True)
