@@ -736,7 +736,7 @@ class Agent(nn.Module):
                 "time_taken": time_taken,
             },
             batch_size=[action.size(0)],
-        ).detach()
+        )
         self.replay_buffer.extend(
             [*td.split(np.ones(td.batch_size[0], dtype=int).tolist(), dim=0)]
         )
@@ -1230,54 +1230,55 @@ class Agent(nn.Module):
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
-        action, log_prob, value, logits = self.get_action(self.state)
-        next_state, rewards, terminated, truncated, next_info = self.env.step(action)
-        reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
-        done = terminated | truncated
+        with torch.no_grad():
+            action, log_prob, value, logits = self.get_action(self.state)
+            next_state, rewards, terminated, truncated, next_info = self.env.step(action)
+            reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
+            done = terminated | truncated
 
-        next_state = TensorDict(
-            {k: v.to(self.device) for k, v in next_state.items()}, batch_size=[]
-        )
-        self.store_transition(
-            self.state,
-            action,
-            log_prob,
-            reward,
-            done,
-            next_state,
-            next_info["time"] - self.info["time"],
-        )
+            next_state = TensorDict(
+                {k: v.to(self.device) for k, v in next_state.items()}, batch_size=[]
+            )
+            self.store_transition(
+                self.state,
+                action,
+                log_prob,
+                reward,
+                done,
+                next_state,
+                next_info["time"] - self.info["time"],
+            )
 
-        metrics = [
-            {
-                "episode/action": float(action[i]),
-                "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
-                "episode/block_size_rel": float(
-                    "nan"
-                    if action[i] == 0
-                    else (action[i] + 1) / self.state["basis_dim"][i]
-                ),
-                "episode/basis_dim": float(self.state["basis_dim"][i]),
-                "episode/time_taken": float(
-                    next_info["time"][i] - self.info["time"][i]
-                ),
-                "episode/time_penalty": float(rewards["time_penalty"][i]),
-                "episode/length_reward": float(rewards["length_reward"][i]),
-                "episode/defect_reward": float(rewards["defect_reward"][i]),
-                "episode/total_reward": float(reward[i]),
-                "episode/action_log_prob": float(log_prob[i]),
-                "episode/value_estimate": float(value[i]),
-                "episode/actor_terminate_logit": float(logits[i][0]),
-                "episode/actor_block_mean_logit": float(logits[i][1]),
-                "episode/actor_block_std_logit": float(logits[i][2]),
-            }
-            for i in range(reward.size(0))
-        ]
+            metrics = [
+                {
+                    "episode/action": float(action[i]),
+                    "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
+                    "episode/block_size_rel": float(
+                        "nan"
+                        if action[i] == 0
+                        else (action[i] + 1) / self.state["basis_dim"][i]
+                    ),
+                    "episode/basis_dim": float(self.state["basis_dim"][i]),
+                    "episode/time_taken": float(
+                        next_info["time"][i] - self.info["time"][i]
+                    ),
+                    "episode/time_penalty": float(rewards["time_penalty"][i]),
+                    "episode/length_reward": float(rewards["length_reward"][i]),
+                    "episode/defect_reward": float(rewards["defect_reward"][i]),
+                    "episode/total_reward": float(reward[i]),
+                    "episode/action_log_prob": float(log_prob[i]),
+                    "episode/value_estimate": float(value[i]),
+                    "episode/actor_terminate_logit": float(logits[i][0]),
+                    "episode/actor_block_mean_logit": float(logits[i][1]),
+                    "episode/actor_block_std_logit": float(logits[i][2]),
+                }
+                for i in range(reward.size(0))
+            ]
 
-        self.state = next_state
-        self.info = next_info
+            self.state = next_state
+            self.info = next_info
 
-        return metrics
+            return metrics
 
     def evaluate(
         self,
