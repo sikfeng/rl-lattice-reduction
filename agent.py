@@ -617,6 +617,7 @@ class AgentConfig:
         simulator: bool = False,
         simulator_hidden_dim: int = 128,
         pred_type: str = Union[Literal["continuous"], Literal["discrete"]],
+        simulator_reward_weight: float = 0.1,
     ) -> None:
         self.ppo_config = ppo_config
         self.device = device
@@ -625,6 +626,7 @@ class AgentConfig:
         self.simulator = simulator
         self.simulator_hidden_dim = simulator_hidden_dim
         self.pred_type = pred_type
+        self.simulator_reward_weight = simulator_reward_weight
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
 
     def __str__(self):
@@ -1235,7 +1237,7 @@ class Agent(nn.Module):
                     next_state,
                     next_info["time"],
                 )
-                simulator_reward = torch.stack(list(simulator_losses.values()), dim=0).sum(
+                simulator_reward = self.agent_config.simulator_reward_weight * torch.stack(list(simulator_losses.values()), dim=0).sum(
                     dim=0
                 )
                 reward = reward + (torch.where(action == 0, 0, 1)
@@ -1282,7 +1284,8 @@ class Agent(nn.Module):
             ]
             if self.agent_config.simulator:
                 for i in range(reward.size(0)):
-                    metrics[i]["episode/simulator_reward"] = float(simulator_reward[i])
+                    metrics[i]["episode/simulator_reward"] = float(torch.clamp(simulator_reward[i], max=10))
+                    metrics[i]["episode/simulator_reward_raw"] = float(simulator_reward[i])
 
             self.state = next_state
             self.info = next_info
