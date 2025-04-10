@@ -145,8 +145,7 @@ class ContinuousPolicyHead(nn.Module):
             nn.Linear(self.feature_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, 2),
-            nn.Sigmoid(),
+            nn.Linear(self.hidden_dim, 3),
         )
 
     def forward(
@@ -156,11 +155,13 @@ class ContinuousPolicyHead(nn.Module):
         basis_dim: torch.Tensor,
     ) -> torch.Tensor:
         actor_output = self.actor(features)
-        #absolute_size = ((1 - actor_output[:, 1]) * (previous_action + 1)
-        #                 + actor_output[:, 1] * basis_dim)
         absolute_size = ((previous_action + 1)
-                         + (1 - actor_output[:, 1]) * (basis_dim - previous_action))
-        actor_output = torch.stack([actor_output[:, 0], absolute_size], dim=1)
+                         + (1 - F.sigmoid(actor_output[:, 1])) * (basis_dim - previous_action))
+        actor_output = torch.stack([
+            F.sigmoid(actor_output[:, 0]),
+            absolute_size,
+            F.softplus(actor_output[:, 2]),
+        ], dim=1)
 
         return actor_output
 
@@ -520,10 +521,6 @@ class ActorCritic(nn.Module):
             nn.Linear(self.actor_hidden_dim, 1),
         )
 
-    def get_std(self) -> torch.Tensor:
-        # TODO: either move into agent, as a generated output from policy network, or into policy network
-        return torch.exp(self.log_std)
-
     def forward(
         self,
         tensordict: TensorDict,
@@ -744,14 +741,14 @@ class Agent(nn.Module):
             [*td.split(np.ones(td.batch_size[0], dtype=int).tolist(), dim=0)]
         )
 
-    def get_action(self, state: TensorDict) -> Tuple[int, float, float]:
+    def get_action(self, state: TensorDict) -> Tuple[int, float, float, torch.Tensor]:
         with torch.no_grad():
             basis_dim = state["basis_dim"]
             last_action = state["last_action"]
             logits, value, _ = self.actor_critic(state)
 
             if self.agent_config.pred_type == "continuous":
-                termination_prob, block_size_float = logits[:, 0], logits[:, 1]
+                termination_prob, block_size_float, block_size_std = logits.unbind(dim=1)
                 if self.training:
                     terminate_dist = torch.distributions.Bernoulli(termination_prob)
                     terminate = terminate_dist.sample()
@@ -759,7 +756,7 @@ class Agent(nn.Module):
 
                     block_size_dist = torch.distributions.Normal(
                         block_size_float,
-                        self.actor_critic.get_std().expand_as(block_size_float),
+                        block_size_std,
                     )
                     cont_block = block_size_dist.rsample()
 
@@ -783,7 +780,7 @@ class Agent(nn.Module):
 
                     block_size_dist = torch.distributions.Normal(
                         block_size_float,
-                        self.actor_critic.get_std().expand_as(block_size_float),
+                        block_size_std,
                     )
                     block_size = torch.round(block_size_float)
                     block_size_log_probs = block_size_dist.log_prob(block_size_float)
@@ -810,7 +807,7 @@ class Agent(nn.Module):
                 action = dist.sample()
                 log_probs = dist.log_prob(action)
 
-            return action, log_probs, value
+            return action, log_probs, value, logits
 
     def _update_continuous(self) -> Dict[str, float]:
         self.train()
@@ -863,7 +860,7 @@ class Agent(nn.Module):
 
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
-            term_probs, block_preds = logits[:, 0], logits[:, 1]
+            term_probs, block_mean_preds, block_pred_std = logits.unbind(dim=1)
             # term_probs, block_preds, values [batch_size]
 
             # Create action masks
@@ -876,8 +873,8 @@ class Agent(nn.Module):
 
             # Calculate block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
-                loc=block_preds[continue_mask],
-                scale=self.actor_critic.get_std().expand_as(block_preds[continue_mask]),
+                loc=block_mean_preds[continue_mask],
+                scale=block_pred_std[continue_mask],
             )
             block_log_probs = block_dist.log_prob(
                 actions[continue_mask].float()
@@ -1233,7 +1230,7 @@ class Agent(nn.Module):
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
-        action, log_prob, value = self.get_action(self.state)
+        action, log_prob, value, logits = self.get_action(self.state)
         next_state, rewards, terminated, truncated, next_info = self.env.step(action)
         reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
         done = terminated | truncated
@@ -1270,6 +1267,9 @@ class Agent(nn.Module):
                 "episode/total_reward": float(reward[i]),
                 "episode/action_log_prob": float(log_prob[i]),
                 "episode/value_estimate": float(value[i]),
+                "episode/actor_terminate_logit": float(logits[i][0]),
+                "episode/actor_block_mean_logit": float(logits[i][1]),
+                "episode/actor_block_std_logit": float(logits[i][2]),
             }
             for i in range(reward.size(0))
         ]
@@ -1296,7 +1296,7 @@ class Agent(nn.Module):
 
         while not done:
             state = state.to(self.device)
-            action, _, _ = self.get_action(state)
+            action, _, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, info = self.env.step(action)
             log_defect_history.append(info["log_defect"].item())
             shortest_length_history.append(info["shortest_length"].item())
