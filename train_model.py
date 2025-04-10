@@ -22,27 +22,40 @@ def main():
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
     parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes. Set to a negative value for infinite training")
     parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
-    parser.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
-    parser.add_argument("--net-dim", type=int, required=True, help="Maximum input dimension for neural network architecture.")
-    parser.add_argument("--train-min-dim", type=int, required=True, help="Minimum basis dimension for training instances.")
-    parser.add_argument("--train-max-dim", type=int, required=True, help="Maximum basis dimension for training instances.")
-    parser.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
-    parser.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
-    parser.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction (of the resulting basis) in the reward function.")
-    parser.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
-    parser.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
-    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
-    parser.add_argument("--minibatch", type=int, default=64, help="Minibatch size for updating weights in PPO.")
-    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for PPO.")
 
-    dist_group = parser.add_mutually_exclusive_group(required=True)
-    dist_group.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
-    dist_group.add_argument("--qary", action="store_true", help="Use a q-ary distribution.")
-    dist_group.add_argument("--ntrulike", action="store_true", help="Use an NTRU-like distribution.")
+    env_args = parser.add_argument_group("Environment Settings")
+    env_args.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
+    env_args.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
+    env_args.add_argument("--train-min-dim", type=int, required=True, help="Minimum basis dimension for training instances.")
+    env_args.add_argument("--train-max-dim", type=int, required=True, help="Maximum basis dimension for training instances.")
+    env_args.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
 
-    pred_group = parser.add_mutually_exclusive_group(required=True)
-    pred_group.add_argument("--continuous", action="store_true", help="Use continuous prediction type.")
-    pred_group.add_argument("--discrete", action="store_true", help="Use discrete prediction type.")
+    dist_args = env_args.add_mutually_exclusive_group(required=True)
+    dist_args.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
+    dist_args.add_argument("--qary", action="store_true", help="Use a q-ary distribution.")
+    dist_args.add_argument("--ntrulike", action="store_true", help="Use an NTRU-like distribution.")
+
+    arch_args = parser.add_argument_group("Architecture Settings")
+    arch_args.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
+    arch_args.add_argument("--net-dim", type=int, required=True, help="Maximum input dimension for neural network architecture.")
+
+    pred_args = arch_args.add_mutually_exclusive_group(required=True)
+    pred_args.add_argument("--continuous", action="store_true", help="Use continuous prediction type.")
+    pred_args.add_argument("--discrete", action="store_true", help="Use discrete prediction type.")
+
+    reward_args = parser.add_argument_group("Reward Weights")
+    reward_args.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
+    reward_args.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
+    reward_args.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction in the reward function.")
+
+    ppo_args = parser.add_argument_group("PPO Training Parameters")
+    ppo_args.add_argument("--minibatch", type=int, default=64, help="Minibatch size for updating weights in PPO.")
+    ppo_args.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for PPO.")
+    ppo_args.add_argument("--ppo-epochs", type=int, default=4, help="Number of epochs for each update in PPO.")
+    ppo_args.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping epsilon for PPO.")
+    ppo_args.add_argument("--clip-grad-norm", type=float, default=0.5, help="Clipping norm for PPO.")
+    ppo_args.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor for PPO.")
+    ppo_args.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="Lambda parameter for GAE.")
 
     args = parser.parse_args()
 
@@ -123,14 +136,21 @@ def main():
         batch_size=args.batch_size,
     )
 
-    ppo_config = PPOConfig(minibatch_size=args.minibatch)
+    ppo_config = PPOConfig(
+        minibatch_size=args.minibatch,
+        lr=args.learning_rate,
+        epochs=args.ppo_epochs,
+        clip_epsilon=args.clip_epsilon,
+        gamma=args.ppo_gamma,
+        gae_lambda=args.ppo_gae_lambda,
+    )
     agent_config = AgentConfig(
         ppo_config=ppo_config,
         device=device,
         batch_size=args.batch_size,
         env_config=env_config,
         simulator=args.simulator,
-        pred_type=args.pred_type
+        pred_type=args.pred_type,
     )
     agent = Agent(agent_config=agent_config).to(device)
 
