@@ -943,9 +943,9 @@ class Agent(nn.Module):
                     next_states,
                     batch["time_taken"],
                 )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"]
-                time_sim_loss = simulator_losses["time_loss"]
-                inverse_loss = simulator_losses["inverse_loss"]
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
+                time_sim_loss = simulator_losses["time_loss"].mean()
+                inverse_loss = simulator_losses["inverse_loss"].mean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
@@ -1104,9 +1104,9 @@ class Agent(nn.Module):
                     next_states,
                     batch["time_taken"],
                 )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"]
-                time_sim_loss = simulator_losses["time_loss"]
-                inverse_loss = simulator_losses["inverse_loss"]
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
+                time_sim_loss = simulator_losses["time_loss"].mean()
+                inverse_loss = simulator_losses["inverse_loss"].mean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
@@ -1187,14 +1187,8 @@ class Agent(nn.Module):
             target_gs_norms=next_features["gs_norms"],
         )
 
-        gs_norm_sim_loss = self.mse_loss(
-            predicted_gs_norms,
-            next_features["gs_norms"],
-        )
-        time_sim_loss = self.mse_loss(
-            predicted_time,
-            time_taken
-        )
+        gs_norm_sim_loss = ((predicted_gs_norms - next_features["gs_norms"]) ** 2).mean(dim=1)
+        time_sim_loss = (predicted_time - time_taken) ** 2
 
         attn_mask = self.actor_critic.gs_norms_encoder._generate_attn_mask(states["basis_dim"])
         current_embedding = self.actor_critic.gs_norms_encoder(
@@ -1210,7 +1204,7 @@ class Agent(nn.Module):
             current_embedding,
             next_embedding,
         ).squeeze(1) * states["basis_dim"]
-        inverse_loss = self.mse_loss(inverse_action, actions.float())
+        inverse_loss = (inverse_action - actions.float()) ** 2
 
         losses = {
             "gs_norm_loss": gs_norm_sim_loss,
@@ -1234,6 +1228,18 @@ class Agent(nn.Module):
             action, log_prob, value, logits = self.get_action(self.state)
             next_state, rewards, terminated, truncated, next_info = self.env.step(action)
             reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
+            if self.agent_config.simulator:
+                simulator_losses = self.get_sim_loss(
+                    action,
+                    self.state,
+                    next_state,
+                    next_info["time"],
+                )
+                simulator_reward = torch.stack(list(simulator_losses.values()), dim=0).sum(
+                    dim=0
+                )
+                reward = reward + (torch.where(action == 0, 0, 1)
+                                * torch.clamp(simulator_reward, max=10))
             done = terminated | truncated
 
             next_state = TensorDict(
@@ -1274,6 +1280,9 @@ class Agent(nn.Module):
                 }
                 for i in range(reward.size(0))
             ]
+            if self.agent_config.simulator:
+                for i in range(reward.size(0)):
+                    metrics[i]["episode/simulator_reward"] = float(simulator_reward[i])
 
             self.state = next_state
             self.info = next_info
