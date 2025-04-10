@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes. Set to a negative value for infinite training")
     parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
 
-    env_args = parser.add_argument_group("Environment Settings")
+    env_args = parser.add_argument_group("Training Environment Settings")
     env_args.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
     env_args.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
     env_args.add_argument("--train-min-dim", type=int, required=True, help="Minimum basis dimension for training instances.")
@@ -47,6 +47,7 @@ def main():
     reward_args.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
     reward_args.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
     reward_args.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction in the reward function.")
+    reward_args.add_argument("--simulator-reward-weight", type=float, default=0.1, help="Weight for simulator reward term (only used if --simulator is enabled).")
 
     ppo_args = parser.add_argument_group("PPO Training Parameters")
     ppo_args.add_argument("--minibatch", type=int, default=64, help="Minibatch size for updating weights in PPO.")
@@ -151,6 +152,7 @@ def main():
         env_config=env_config,
         simulator=args.simulator,
         pred_type=args.pred_type,
+        simulator_reward_weight=args.simulator_reward_weight,
     )
     agent = Agent(agent_config=agent_config).to(device)
 
