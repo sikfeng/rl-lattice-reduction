@@ -557,22 +557,22 @@ class VectorizedReductionEnvironment:
                 key: torch.stack([state[key] for state in next_states]).squeeze(-1)
                 for key in next_states[0]
             }
-        )
+        ).to(actions.device)
 
         rewards_ = defaultdict(list)
         for d in rewards:
             for key, value in d.items():
                 rewards_[key].append(value)
-        rewards_ = {key: torch.tensor(value) for key, value in rewards_.items()}
+        rewards_ = {key: torch.tensor(value, device=actions.device) for key, value in rewards_.items()}
 
-        terminateds_ = torch.tensor(terminateds, dtype=torch.bool)
-        truncateds_ = torch.tensor(truncateds, dtype=torch.bool)
+        terminateds_ = torch.tensor(terminateds, dtype=torch.bool, device=actions.device)
+        truncateds_ = torch.tensor(truncateds, dtype=torch.bool, device=actions.device)
         infos_ = {}
         for key in infos[0]:
             if isinstance(infos[0][key], torch.Tensor):
-                infos_[key] = torch.stack([info[key] for info in infos])
+                infos_[key] = torch.stack([info[key] for info in infos]).to(actions.device)
             else:
-                infos_[key] = torch.Tensor([info[key] for info in infos])
+                infos_[key] = torch.tensor([info[key] for info in infos], device=actions.device)
 
         return next_states_, rewards_, terminateds_, truncateds_, infos_
 

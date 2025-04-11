@@ -706,7 +706,9 @@ class Agent(nn.Module):
         self.agent_config.env_config.batch_size = self.batch_size
         self.env = VectorizedReductionEnvironment(self.agent_config.env_config)
         self.state, self.info = self.env.reset()
-        self.state = TensorDict(self.state, batch_size=[]).to(self.device)
+
+        self.state = self.state.to(self.device)
+        self.info = self.info.to(self.device)
 
     def simulate(
         self,
@@ -1202,9 +1204,9 @@ class Agent(nn.Module):
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
 
-        gs_norm_sim_loss = torch.full_like(actions, float("nan"))
-        time_sim_loss = torch.full_like(actions, float("nan"))
-        inverse_loss = torch.full_like(actions, float("nan"))
+        gs_norm_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
+        time_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
+        inverse_loss = torch.full_like(actions, float("nan"), device=actions.device)
 
         continue_mask = actions != 0
         if continue_mask.any():
@@ -1293,9 +1295,6 @@ class Agent(nn.Module):
                 reward = reward + torch.clamp(simulator_reward_, max=10)
             done = terminated | truncated
 
-            next_state = TensorDict(
-                {k: v.to(self.device) for k, v in next_state.items()}, batch_size=[]
-            )
             self.store_transition(
                 self.state,
                 action,
