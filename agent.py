@@ -583,14 +583,13 @@ class ActorCritic(nn.Module):
 class PPOConfig:
     def __init__(
         self,
-        lr: float = 1e-4,
+        lr: float = 1e-5,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
         clip_grad_norm: float = 0.5,
         epochs: int = 4,
         minibatch_size: int = 64,
-        sim_lr: float = 1e-5,
     ) -> None:
         self.lr = lr
         self.gamma = gamma
@@ -599,12 +598,29 @@ class PPOConfig:
         self.clip_grad_norm = clip_grad_norm
         self.epochs = epochs
         self.minibatch_size = minibatch_size
-        self.sim_lr = sim_lr
 
     def __str__(self):
         self_dict = vars(self)
         return f"PPOConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
 
+class SimulatorConfig:
+    def __init__(
+        self,
+        lr: float = 1e-5,
+        hidden_dim: int = 128, # TODO: must equal actor critic gs norm embedding hidden dim!
+        gs_norm_weight: float = 1.0,
+        time_weight: float = 1.0,
+        inverse_weight: float = 0.05,
+    ) -> None:
+        self.lr = lr
+        self.hidden_dim = hidden_dim
+        self.gs_norm_weight = gs_norm_weight
+        self.time_weight = time_weight
+        self.inverse_weight = inverse_weight
+
+    def __str__(self):
+        self_dict = vars(self)
+        return f"SimulatorConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
 
 class AgentConfig:
     def __init__(
@@ -615,19 +631,23 @@ class AgentConfig:
         dropout_p: float = 0.1,
         env_config: Optional[ReductionEnvConfig] = None,
         simulator: bool = False,
-        simulator_hidden_dim: int = 128,
         pred_type: str = Union[Literal["continuous"], Literal["discrete"]],
         simulator_reward_weight: float = 0.1,
+        simulator_config: Optional[SimulatorConfig] = None,
     ) -> None:
         self.ppo_config = ppo_config
         self.device = device
         self.batch_size = batch_size
         self.dropout_p = dropout_p
         self.simulator = simulator
-        self.simulator_hidden_dim = simulator_hidden_dim
         self.pred_type = pred_type
-        self.simulator_reward_weight = simulator_reward_weight
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
+        self.simulator_reward_weight = 0.0 if not simulator else simulator_reward_weight
+        self.simulator_config = (
+            None
+            if not simulator
+            else simulator_config if simulator_config is not None else SimulatorConfig()
+        )
 
     def __str__(self):
         self_dict = vars(self)
@@ -656,7 +676,7 @@ class Agent(nn.Module):
                 gs_norms_encoder=self.actor_critic.gs_norms_encoder,
                 action_encoder=self.actor_critic.action_encoder,
                 dropout_p=self.agent_config.dropout_p,
-                hidden_dim=self.agent_config.simulator_hidden_dim,
+                hidden_dim=self.agent_config.simulator_config.hidden_dim,
             )
             self.inverse_model = InverseModel(
                 input_embedding_dim=self.actor_critic.gs_norms_encoder.hidden_dim
@@ -666,7 +686,7 @@ class Agent(nn.Module):
             )
             self.sim_optimizer = optim.AdamW(
                 [*self.simulator.parameters()] + [*self.inverse_model.parameters()],
-                lr=self.agent_config.ppo_config.sim_lr,
+                lr=self.agent_config.simulator_config.lr,
             )
 
         self.mse_loss = nn.MSELoss()
@@ -1255,16 +1275,19 @@ class Agent(nn.Module):
                     next_state,
                     next_info["time"],
                 )
-                simulator_reward = (
-                    self.agent_config.simulator_reward_weight
-                    * torch.stack(
-                        [
-                            simulator_losses["gs_norm_loss"],
-                            simulator_losses["time_loss"],
-                            0.05 * simulator_losses["inverse_loss"], # the inverse norm will inherently be very noisy since there may not be a unique action that maps to the same state
-                        ],
-                        dim=0,
-                    ).sum(dim=0)
+                simulator_reward = self.agent_config.simulator_reward_weight * torch.stack(
+                    [
+                        self.agent_config.simulator_config.gs_norm_weight
+                        * simulator_losses["gs_norm_loss"],
+                        self.agent_config.simulator_config.time_weight
+                        * simulator_losses["time_loss"],
+                        self.agent_config.simulator_config.inverse_weight
+                        * simulator_losses[
+                            "inverse_loss"
+                        ],                    ],
+                    dim=0,
+                ).sum(
+                    dim=0
                 )
                 simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
                 reward = reward + torch.clamp(simulator_reward_, max=10)

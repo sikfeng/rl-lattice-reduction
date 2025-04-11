@@ -10,53 +10,171 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from agent import Agent, AgentConfig, PPOConfig
+from agent import Agent, AgentConfig, PPOConfig, SimulatorConfig
 from reduction_env import ReductionEnvConfig
 
 
 def main():
     FPLLL.set_precision(1000)
 
-    parser = argparse.ArgumentParser(description="Reinforcement Learning for BKZ Lattice Reduction.")
+    parser = argparse.ArgumentParser(
+        description="Reinforcement Learning for BKZ Lattice Reduction."
+    )
 
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility.")
-    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes. Set to a negative value for infinite training")
-    parser.add_argument("--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval.")
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=1000,
+        help="Number of training episodes. Set to a negative value for infinite training",
+    )
+    parser.add_argument(
+        "--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval."
+    )
 
     env_args = parser.add_argument_group("Training Environment Settings")
-    env_args.add_argument("--time-limit", type=float, default=300.0, help="Time limit before environment truncates run.")
-    env_args.add_argument("--batch-size", type=int, default=1, help="Batch size for training.")
-    env_args.add_argument("--train-min-dim", type=int, required=True, help="Minimum basis dimension for training instances.")
-    env_args.add_argument("--train-max-dim", type=int, required=True, help="Maximum basis dimension for training instances.")
-    env_args.add_argument("--max-block-size", type=int, help="Maximum block size for reduction.")
+    env_args.add_argument(
+        "--time-limit",
+        type=float,
+        default=300.0,
+        help="Time limit before environment truncates run.",
+    )
+    env_args.add_argument(
+        "--batch-size", type=int, default=1, help="Batch size for training."
+    )
+    env_args.add_argument(
+        "--train-min-dim",
+        type=int,
+        required=True,
+        help="Minimum basis dimension for training instances.",
+    )
+    env_args.add_argument(
+        "--train-max-dim",
+        type=int,
+        required=True,
+        help="Maximum basis dimension for training instances.",
+    )
+    env_args.add_argument(
+        "--max-block-size", type=int, help="Maximum block size for reduction."
+    )
 
     dist_args = env_args.add_mutually_exclusive_group(required=True)
-    dist_args.add_argument("--uniform", action="store_true", help="Use a uniform distribution.")
-    dist_args.add_argument("--qary", action="store_true", help="Use a q-ary distribution.")
-    dist_args.add_argument("--ntrulike", action="store_true", help="Use an NTRU-like distribution.")
+    dist_args.add_argument(
+        "--uniform", action="store_true", help="Use a uniform distribution."
+    )
+    dist_args.add_argument(
+        "--qary", action="store_true", help="Use a q-ary distribution."
+    )
+    dist_args.add_argument(
+        "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
+    )
 
     arch_args = parser.add_argument_group("Architecture Settings")
-    arch_args.add_argument("--simulator", action=argparse.BooleanOptionalAction, default=False, help="Use a simulator for training.")
-    arch_args.add_argument("--net-dim", type=int, required=True, help="Maximum input dimension for neural network architecture.")
+    arch_args.add_argument(
+        "--simulator",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use a simulator for training.",
+    )
+    arch_args.add_argument(
+        "--net-dim",
+        type=int,
+        required=True,
+        help="Maximum input dimension for neural network architecture.",
+    )
 
     pred_args = arch_args.add_mutually_exclusive_group(required=True)
-    pred_args.add_argument("--continuous", action="store_true", help="Use continuous prediction type.")
-    pred_args.add_argument("--discrete", action="store_true", help="Use discrete prediction type.")
+    pred_args.add_argument(
+        "--continuous", action="store_true", help="Use continuous prediction type."
+    )
+    pred_args.add_argument(
+        "--discrete", action="store_true", help="Use discrete prediction type."
+    )
 
     reward_args = parser.add_argument_group("Reward Weights")
-    reward_args.add_argument("--time-penalty-weight", type=float, default=-1.0, help="Weight for time penalty in the reward function.")
-    reward_args.add_argument("--defect-reward-weight", type=float, default=0.1, help="Weight for (log) orthogonality defect reduction in the reward function.")
-    reward_args.add_argument("--length-reward-weight", type=float, default=1.0, help="Weight for shortest vector length reduction in the reward function.")
-    reward_args.add_argument("--simulator-reward-weight", type=float, default=0.1, help="Weight for simulator reward term (only used if --simulator is enabled).")
+    reward_args.add_argument(
+        "--time-penalty-weight",
+        type=float,
+        default=-1.0,
+        help="Weight for time penalty in the reward function.",
+    )
+    reward_args.add_argument(
+        "--defect-reward-weight",
+        type=float,
+        default=0.1,
+        help="Weight for (log) orthogonality defect reduction in the reward function.",
+    )
+    reward_args.add_argument(
+        "--length-reward-weight",
+        type=float,
+        default=1.0,
+        help="Weight for shortest vector length reduction in the reward function.",
+    )
+
+    simulator_args = parser.add_argument_group(
+        "Simulator Weights (only used if --simulator is enabled)"
+    )
+    simulator_args.add_argument(
+        "--simulator-lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for simulator optimizer.",
+    )
+    simulator_args.add_argument(
+        "--simulator-reward-weight",
+        type=float,
+        default=0.1,
+        help="Weight for simulator reward term (only used if --simulator is enabled).",
+    )
+    simulator_args.add_argument(
+        "--simulator-gs-norm-weight",
+        type=float,
+        default=1.0,
+        help="Weight for simulator GS norm loss term (only used if --simulator is enabled).",
+    )
+    simulator_args.add_argument(
+        "--simulator-time-weight",
+        type=float,
+        default=1.0,
+        help="Weight for simulator time loss term (only used if --simulator is enabled).",
+    )
+    simulator_args.add_argument(
+        "--simulator-inverse-weight",
+        type=float,
+        default=0.05,
+        help="Weight for simulator inverse loss term (only used if --simulator is enabled). The inverse norm will inherently be very noisy since there may not be a unique action that maps to the same state.",
+    )
 
     ppo_args = parser.add_argument_group("PPO Training Parameters")
-    ppo_args.add_argument("--minibatch", type=int, default=64, help="Minibatch size for updating weights in PPO.")
-    ppo_args.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate for PPO.")
-    ppo_args.add_argument("--ppo-epochs", type=int, default=4, help="Number of epochs for each update in PPO.")
-    ppo_args.add_argument("--clip-epsilon", type=float, default=0.2, help="Clipping epsilon for PPO.")
-    ppo_args.add_argument("--clip-grad-norm", type=float, default=0.5, help="Clipping norm for PPO.")
-    ppo_args.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor for PPO.")
-    ppo_args.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="Lambda parameter for GAE.")
+    ppo_args.add_argument(
+        "--minibatch",
+        type=int,
+        default=64,
+        help="Minibatch size for updating weights in PPO.",
+    )
+    ppo_args.add_argument(
+        "--learning-rate", type=float, default=1e-5, help="Learning rate for PPO."
+    )
+    ppo_args.add_argument(
+        "--ppo-epochs",
+        type=int,
+        default=4,
+        help="Number of epochs for each update in PPO.",
+    )
+    ppo_args.add_argument(
+        "--clip-epsilon", type=float, default=0.2, help="Clipping epsilon for PPO."
+    )
+    ppo_args.add_argument(
+        "--clip-grad-norm", type=float, default=0.5, help="Clipping norm for PPO."
+    )
+    ppo_args.add_argument(
+        "--ppo-gamma", type=float, default=0.99, help="Discount factor for PPO."
+    )
+    ppo_args.add_argument(
+        "--ppo-gae-lambda", type=float, default=0.95, help="Lambda parameter for GAE."
+    )
 
     args = parser.parse_args()
 
@@ -85,6 +203,30 @@ def main():
         args.pred_type = "continuous"
     else:
         args.pred_type = "discrete"
+
+    # if not args.simulator:
+    #     args.simulator_reward_weight = 0.0
+
+    # reward_weight_sum = (
+    #     abs(args.time_penalty_weight)
+    #     + abs(args.defect_reward_weight)
+    #     + abs(args.length_reward_weight)
+    #     + abs(args.simulator_reward_weight)
+    # )
+    # args.time_penalty_weight /= reward_weight_sum
+    # args.defect_reward_weight /= reward_weight_sum
+    # args.length_reward_weight /= reward_weight_sum
+    # args.simulator_reward_weight /= reward_weight_sum
+
+    # simulator_weight_sum = (
+    #     abs(args.simulator_reward_weight)
+    #     + abs(args.simulator_gs_norm_weight)
+    #     + abs(args.simulator_time_weight)
+    #     + abs(args.simulator_inverse_weight)
+    # )
+    # args.simulator_gs_norm_weight /= simulator_weight_sum
+    # args.simulator_time_weight /= simulator_weight_sum
+    # args.simulator_inverse_weight /= simulator_weight_sum
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -145,6 +287,12 @@ def main():
         gamma=args.ppo_gamma,
         gae_lambda=args.ppo_gae_lambda,
     )
+    simulator_config = SimulatorConfig(
+        lr=args.simulator_lr,
+        gs_norm_weight=args.simulator_gs_norm_weight,
+        time_weight=args.simulator_time_weight,
+        inverse_weight=args.simulator_inverse_weight,
+    )
     agent_config = AgentConfig(
         ppo_config=ppo_config,
         device=device,
@@ -153,6 +301,7 @@ def main():
         simulator=args.simulator,
         pred_type=args.pred_type,
         simulator_reward_weight=args.simulator_reward_weight,
+        simulator_config=simulator_config,
     )
     agent = Agent(agent_config=agent_config).to(device)
 
