@@ -47,8 +47,7 @@ class BKZReduction(object):
             M = None
             A = A
         else:
-            raise TypeError(
-                "Matrix must be IntegerMatrix but got type '%s'" % type(A))
+            raise TypeError("Matrix must be IntegerMatrix but got type '%s'" % type(A))
 
         if M is None and L is None:
             # run LLL first, but only if a matrix was passed
@@ -82,8 +81,7 @@ class BKZReduction(object):
             block_size = min(params.block_size, max_row - kappa)
             clean &= self.svp_reduction(kappa, block_size, params, tracer)
 
-        self.lll_obj.size_reduction(
-            max(0, max_row - 1), max_row, max(0, max_row - 2))
+        self.lll_obj.size_reduction(max(0, max_row - 1), max_row, max(0, max_row - 2))
         return clean
 
     def svp_preprocessing(self, kappa, block_size, params, tracer):
@@ -137,9 +135,9 @@ class BKZReduction(object):
         try:
             enum_obj = Enumeration(self.M)
             with tracer.context("enumeration", enum_obj=enum_obj, probability=1.0):
-                max_dist, solution = enum_obj.enumerate(kappa, kappa + block_size, max_dist, expo)[
-                    0
-                ]
+                max_dist, solution = enum_obj.enumerate(
+                    kappa, kappa + block_size, max_dist, expo
+                )[0]
 
         except EnumerationError as msg:
             if params.flags & BKZ.GH_BND:
@@ -184,7 +182,8 @@ class BKZReduction(object):
                 for i in range(block_size):
                     if solution[i] and i != j_nz:
                         self.M.row_addmul(
-                            kappa + j_nz, kappa + i, solution[j_nz] * solution[i])
+                            kappa + j_nz, kappa + i, solution[j_nz] * solution[i]
+                        )
 
             self.M.move_row(kappa + j_nz, kappa)
 
@@ -211,10 +210,8 @@ class BKZReduction(object):
 
                             while solution[k - offset]:
                                 while solution[k - offset] <= solution[k]:
-                                    solution[k] = solution[k] - \
-                                        solution[k - offset]
-                                    self.M.row_addmul(
-                                        kappa + k - offset, kappa + k, 1)
+                                    solution[k] = solution[k] - solution[k - offset]
+                                    self.M.row_addmul(kappa + k - offset, kappa + k, 1)
 
                                 solution[k], solution[k - offset] = (
                                     solution[k - offset],
@@ -241,15 +238,13 @@ class BKZReduction(object):
         """
         clean = True
         with tracer.context("preprocessing"):
-            clean_pre = self.svp_preprocessing(
-                kappa, block_size, params, tracer)
+            clean_pre = self.svp_preprocessing(kappa, block_size, params, tracer)
         clean &= clean_pre
 
         solution = self.svp_call(kappa, block_size, params, tracer)
 
         with tracer.context("postprocessing"):
-            clean_post = self.svp_postprocessing(
-                kappa, block_size, solution, tracer)
+            clean_post = self.svp_postprocessing(kappa, block_size, solution, tracer)
         clean &= clean_post
 
         self.lll_obj.size_reduction(0, kappa + 1)
@@ -279,7 +274,9 @@ class ReductionEnvConfig:
 
     def __str__(self):
         self_dict = vars(self)
-        return f"ReductionEnvConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+        return (
+            f"ReductionEnvConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+        )
 
 
 class ReductionEnvironment:
@@ -297,24 +294,29 @@ class ReductionEnvironment:
         return {
             "basis": basis,
             "last_action": last_action,
-            "basis_dim": torch.tensor([self.basis.ncols])
+            "basis_dim": torch.tensor([self.basis.ncols]),
         }
 
     def _get_info(self) -> Dict[str, Any]:
         return {
             "log_defect": self.log_defect_history[-1],
             "shortest_length": self.shortest_length_history[-1],
-            #"time": sum(self.time_history),
-            "time": self.enum_history[-1], # temp hack
+            # "time": sum(self.time_history),
+            "time": self.enum_history[-1],  # temp hack
         }
 
-    def reset(self, options: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+    def reset(
+        self, options: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         if options is None:
-            #basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
-            basis_dim = np.random.randint(
-                self.config.train_min_dim // 2,
-                self.config.train_max_dim // 2 + 1,
-            ) * 2 # temp hack until I figure out how to properly represent allowable lattice dimensions
+            # basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
+            basis_dim = (
+                np.random.randint(
+                    self.config.train_min_dim // 2,
+                    self.config.train_max_dim // 2 + 1,
+                )
+                * 2
+            )  # temp hack until I figure out how to properly represent allowable lattice dimensions
             options = generate_random_basis(None, basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
 
@@ -339,7 +341,7 @@ class ReductionEnvironment:
         self.log_defect_history = []
         self.shortest_length_history = []
         self.time_history = []
-        self.enum_history = [] # store number of nodes visited by enumeration
+        self.enum_history = []  # store number of nodes visited by enumeration
         # initial basis is always LLL = BKZ-2 reduced
         self._update_history(action=1, time_taken=0)
 
@@ -349,7 +351,9 @@ class ReductionEnvironment:
 
     def _action_to_block(self, action: int) -> int:
         """Convert single action index to block size"""
-        assert np.all(np.array(action) < self.config.net_dim), f"Action {action} provided, but only {self.config.net_dim} actions available!"
+        assert np.all(
+            np.array(action) < self.config.net_dim
+        ), f"Action {action} provided, but only {self.config.net_dim} actions available!"
 
         return np.array(action) + 1
 
@@ -357,7 +361,9 @@ class ReductionEnvironment:
         # _block_to_action should be the (both left and right) inverse of _action_to_block
         return block_size - 1
 
-    def step(self, action: int) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
+    def step(
+        self, action: int
+    ) -> Tuple[Dict[str, torch.Tensor], float, bool, bool, Dict[str, Any]]:
         time_taken = 0
         if action != 0:
             start_time = process_time()
@@ -462,13 +468,13 @@ class ReductionEnvironment:
     @staticmethod
     def compute_log_defect(basis: IntegerMatrix) -> float:
         """Compute the orthogonality defect of a given basis."""
-        m = GSO.Mat(basis, flags=GSO.INT_GRAM |
-                    GSO.ROW_EXPO, float_type="mpfr")
+        m = GSO.Mat(basis, flags=GSO.INT_GRAM | GSO.ROW_EXPO, float_type="mpfr")
         m.update_gso()
         log_det = m.get_log_det(0, basis.nrows) / 2  # log(determinant)
         log_prod_norms = sum(np.log(v.norm()) for v in basis)
         log_defect = log_prod_norms - log_det
         return log_defect
+
 
 def _worker(work_remote, remote, config):
     """Worker function to run environment in subprocess."""
@@ -477,13 +483,13 @@ def _worker(work_remote, remote, config):
     try:
         while True:
             cmd, data = work_remote.recv()
-            if cmd == 'reset':
+            if cmd == "reset":
                 obs, info = env.reset(data)
                 work_remote.send((obs, info))
-            elif cmd == 'step':
+            elif cmd == "step":
                 obs, reward, terminated, truncated, info = env.step(data)
                 work_remote.send((obs, reward, terminated, truncated, info))
-            elif cmd == 'close':
+            elif cmd == "close":
                 work_remote.close()
                 break
             else:
@@ -497,11 +503,14 @@ class VectorizedReductionEnvironment:
         self.config = config
         self.batch_size = config.batch_size
 
-        start_method = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+        start_method = (
+            "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+        )
         ctx = mp.get_context(start_method)
 
         self.remotes, self.work_remotes = zip(
-            *[ctx.Pipe() for _ in range(self.batch_size)])
+            *[ctx.Pipe() for _ in range(self.batch_size)]
+        )
         self.processes = []
         for work_remote, remote in zip(self.work_remotes, self.remotes):
             args = (work_remote, remote, config)
@@ -519,12 +528,14 @@ class VectorizedReductionEnvironment:
             options_list = options.unbind(dim=0)
 
         for remote, action in zip(self.remotes, options_list):
-            remote.send(('reset', action))
+            remote.send(("reset", action))
         results = [remote.recv() for remote in self.remotes]
         states, infos = zip(*results)
 
-        states_ = {key: torch.stack([state[key]
-                                    for state in states]).squeeze(-1) for key in states[0]}
+        states_ = {
+            key: torch.stack([state[key] for state in states]).squeeze(-1)
+            for key in states[0]
+        }
         infos_ = {}
         for key in infos[0]:
             if isinstance(infos[0][key], torch.Tensor):
@@ -537,12 +548,16 @@ class VectorizedReductionEnvironment:
     def step(self, actions: torch.Tensor):
         actions_list = actions.cpu().int().tolist()
         for remote, action in zip(self.remotes, actions_list):
-            remote.send(('step', action))
+            remote.send(("step", action))
         results = [remote.recv() for remote in self.remotes]
         next_states, rewards, terminateds, truncateds, infos = zip(*results)
 
-        next_states_ = TensorDict({key: torch.stack(
-            [state[key] for state in next_states]).squeeze(-1) for key in next_states[0]})
+        next_states_ = TensorDict(
+            {
+                key: torch.stack([state[key] for state in next_states]).squeeze(-1)
+                for key in next_states[0]
+            }
+        )
 
         rewards_ = defaultdict(list)
         for d in rewards:
@@ -568,7 +583,7 @@ class VectorizedReductionEnvironment:
         self.closed = True
         for remote in self.remotes:
             try:
-                remote.send(('close', None))
+                remote.send(("close", None))
             except BrokenPipeError:
                 pass
         for process in self.processes:
