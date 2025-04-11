@@ -945,9 +945,9 @@ class Agent(nn.Module):
                     next_states,
                     batch["time_taken"],
                 )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
-                time_sim_loss = simulator_losses["time_loss"].mean()
-                inverse_loss = simulator_losses["inverse_loss"].mean()
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
+                time_sim_loss = simulator_losses["time_loss"].nanmean()
+                inverse_loss = simulator_losses["inverse_loss"].nanmean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
 
             self.optimizer.zero_grad()
@@ -1181,32 +1181,50 @@ class Agent(nn.Module):
     ) -> Dict[str, float]:
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
-        predicted_gs_norms, predicted_time, _ = self.simulate(
-            current_gs_norms=current_features["gs_norms"],
-            previous_action=current_features["last_action"],
-            basis_dim=current_features["basis_dim"],
-            current_action=actions.float(),
-            target_gs_norms=next_features["gs_norms"],
-        )
 
-        gs_norm_sim_loss = ((predicted_gs_norms - next_features["gs_norms"]) ** 2).mean(dim=1)
-        time_sim_loss = (predicted_time - time_taken) ** 2
+        gs_norm_sim_loss = torch.full_like(actions, float("nan"))
+        time_sim_loss = torch.full_like(actions, float("nan"))
+        inverse_loss = torch.full_like(actions, float("nan"))
 
-        attn_mask = self.actor_critic.gs_norms_encoder._generate_attn_mask(states["basis_dim"])
-        current_embedding = self.actor_critic.gs_norms_encoder(
-            current_features["gs_norms"].unsqueeze(-1),
-            attn_mask
-        )
-        next_embedding = self.actor_critic.gs_norms_encoder(
-            next_features["gs_norms"].unsqueeze(-1),
-            attn_mask
-        )
+        continue_mask = actions != 0
+        if continue_mask.any():
+            predicted_gs_norms, predicted_time, _ = self.simulate(
+                current_gs_norms=current_features["gs_norms"][continue_mask],
+                previous_action=current_features["last_action"][continue_mask],
+                basis_dim=current_features["basis_dim"][continue_mask],
+                current_action=actions[continue_mask].float(),
+                target_gs_norms=next_features["gs_norms"][continue_mask],
+            )
 
-        inverse_action = self.inverse_model(
-            current_embedding,
-            next_embedding,
-        ).squeeze(1) * states["basis_dim"]
-        inverse_loss = (inverse_action - actions.float()) ** 2
+            gs_norm_sim_loss[continue_mask] = (
+                (predicted_gs_norms - next_features["gs_norms"][continue_mask]) ** 2
+            ).mean(dim=1)
+            time_sim_loss[continue_mask] = (
+                predicted_time - time_taken[continue_mask]
+            ) ** 2
+
+            attn_mask = self.actor_critic.gs_norms_encoder._generate_attn_mask(
+                states["basis_dim"][continue_mask]
+            )
+            current_embedding = self.actor_critic.gs_norms_encoder(
+                current_features["gs_norms"][continue_mask].unsqueeze(-1),
+                attn_mask
+            )
+            next_embedding = self.actor_critic.gs_norms_encoder(
+                next_features["gs_norms"][continue_mask].unsqueeze(-1),
+                attn_mask
+            )
+
+            inverse_action = (
+                self.inverse_model(
+                    current_embedding,
+                    next_embedding,
+                ).squeeze(1)
+                * states["basis_dim"][continue_mask]
+            )
+            inverse_loss[continue_mask] = (
+                inverse_action - actions[continue_mask].float()
+            ) ** 2
 
         losses = {
             "gs_norm_loss": gs_norm_sim_loss,
@@ -1237,11 +1255,19 @@ class Agent(nn.Module):
                     next_state,
                     next_info["time"],
                 )
-                simulator_reward = self.agent_config.simulator_reward_weight * torch.stack(list(simulator_losses.values()), dim=0).sum(
-                    dim=0
+                simulator_reward = (
+                    self.agent_config.simulator_reward_weight
+                    * torch.stack(
+                        [
+                            simulator_losses["gs_norm_loss"],
+                            simulator_losses["time_loss"],
+                            0.05 * simulator_losses["inverse_loss"], # the inverse norm will inherently be very noisy since there may not be a unique action that maps to the same state
+                        ],
+                        dim=0,
+                    ).sum(dim=0)
                 )
-                reward = reward + (torch.where(action == 0, 0, 1)
-                                * torch.clamp(simulator_reward, max=10))
+                simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
+                reward = reward + torch.clamp(simulator_reward_, max=10)
             done = terminated | truncated
 
             next_state = TensorDict(
@@ -1286,6 +1312,9 @@ class Agent(nn.Module):
                 for i in range(reward.size(0)):
                     metrics[i]["episode/simulator_reward"] = float(torch.clamp(simulator_reward[i], max=10))
                     metrics[i]["episode/simulator_reward_raw"] = float(simulator_reward[i])
+                    metrics[i]["episode/simulator_gs_norm_loss"] = float(simulator_losses["gs_norm_loss"][i])
+                    metrics[i]["episode/simulator_time_loss"] = float(simulator_losses["time_loss"][i])
+                    metrics[i]["episode/simulator_inverse_loss"] = float(simulator_losses["inverse_loss"][i])
 
             self.state = next_state
             self.info = next_info

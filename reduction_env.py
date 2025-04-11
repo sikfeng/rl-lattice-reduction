@@ -396,7 +396,14 @@ class ReductionEnvironment:
             if child.label == "enumeration":
                 enum_nodes = child.data["#enum"]
                 break
-        self.enum_history.append(enum_nodes - sum(self.enum_history) if enum_nodes is not None else 0)
+
+        # 1e-6 because the number of enum calls is really big
+        # TODO: set as configurable param
+        self.enum_history.append(
+            1e-6 * float(enum_nodes) - sum(self.enum_history)
+            if enum_nodes is not None
+            else 0
+        )
 
     def _compute_reward(self) -> float:
         # Initialize reward components dictionary for better tracking
@@ -409,12 +416,16 @@ class ReductionEnvironment:
         if self.action_history[-1] == 0:
             return rewards
 
-        #rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
-        rewards["time_penalty"] = self.config.time_penalty_weight * 1e-6 * self.enum_history[-1]
-        rewards["defect_reward"] = (self.config.defect_reward_weight
-                                    * (self.log_defect_history[-2] - self.log_defect_history[-1]))
-        rewards["length_reward"] = (self.config.length_reward_weight
-                                    * (self.shortest_length_history[-2] - self.shortest_length_history[-1]))
+        # rewards["time_penalty"] = self.config.time_penalty_weight * self.time_history[-1]
+        rewards["time_penalty"] = (
+            self.config.time_penalty_weight * self.enum_history[-1]
+        )
+        rewards["defect_reward"] = self.config.defect_reward_weight * (
+            self.log_defect_history[-2] - self.log_defect_history[-1]
+        )
+        rewards["length_reward"] = self.config.length_reward_weight * (
+            self.shortest_length_history[-2] - self.shortest_length_history[-1]
+        )
 
         return rewards
 
