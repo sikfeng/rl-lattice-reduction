@@ -92,9 +92,8 @@ class Simulator(nn.Module):
         if "gs_norms_embedding" in cached_states:
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
-            gs_norms_reshaped = current_gs_norms.unsqueeze(-1)
             pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, pad_mask)
+            gs_norms_embedding = self.gs_norms_encoder(current_gs_norms, pad_mask)
 
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
@@ -208,7 +207,7 @@ class Simulator(nn.Module):
         target_gs_norms: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        tgt = self.gs_norms_encoder.input_projection(target_gs_norms.unsqueeze(-1))
+        tgt = self.gs_norms_encoder.input_projection(target_gs_norms)
         tgt = self.gs_norms_encoder.pos_encoding(tgt)
         seq_len = target_gs_norms.size(1)
         tgt = torch.cat(

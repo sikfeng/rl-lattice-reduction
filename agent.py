@@ -649,11 +649,11 @@ class Agent(nn.Module):
                 states["basis_dim"][continue_mask]
             )
             current_embedding = self.actor_critic.gs_norms_encoder(
-                current_features["gs_norms"][continue_mask].unsqueeze(-1),
+                current_features["gs_norms"][continue_mask],
                 pad_mask
             )
             next_embedding = self.actor_critic.gs_norms_encoder(
-                next_features["gs_norms"][continue_mask].unsqueeze(-1),
+                next_features["gs_norms"][continue_mask],
                 pad_mask
             )
 

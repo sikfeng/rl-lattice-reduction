@@ -49,6 +49,7 @@ class GSNormEncoder(nn.Module):
         self.hidden_dim = hidden_dim
 
         self.input_projection = nn.Sequential(
+            nn.Unflatten(1, (-1, 1)),
             nn.Linear(1, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),

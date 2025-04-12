@@ -174,9 +174,8 @@ class ActorCritic(nn.Module):
         if "gs_norms_embedding" in cached_states:
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
-            gs_norms_reshaped = gs_norms.unsqueeze(-1)
             pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, pad_mask)
+            gs_norms_embedding = self.gs_norms_encoder(gs_norms, pad_mask)
 
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
