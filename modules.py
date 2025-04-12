@@ -35,7 +35,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 
-class GSNormEncoder(nn.Module):
+class BasisEncoder(nn.Module):
     def __init__(
         self,
         dropout_p: float,
@@ -49,7 +49,7 @@ class GSNormEncoder(nn.Module):
         self.hidden_dim = hidden_dim
 
         self.input_projection = nn.Sequential(
-            nn.Linear(1, self.hidden_dim),
+            nn.Linear(self.max_basis_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
@@ -76,10 +76,10 @@ class GSNormEncoder(nn.Module):
 
     def forward(
         self,
-        gs_norms: torch.Tensor,
+        basis: torch.Tensor,
         pad_mask: torch.Tensor,
     ) -> torch.Tensor:
-        x = self.input_projection(gs_norms)
+        x = self.input_projection(basis)
         x = self.pos_encoding(x)
         x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
         x = self.encoder_projection(x)

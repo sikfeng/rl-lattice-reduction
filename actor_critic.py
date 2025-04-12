@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from modules import GSNormEncoder, ActionEncoder
+from modules import BasisEncoder, ActionEncoder
 
 
 class ContinuousPolicyHead(nn.Module):
@@ -103,7 +103,7 @@ class ActorCritic(nn.Module):
         policy_type: str,
         max_basis_dim: int,
         dropout_p: float = 0.1,
-        gs_norms_embedding_hidden_dim: int = 128,
+        basis_embedding_hidden_dim: int = 128,
         action_embedding_dim: int = 8,
         actor_hidden_dim: int = 128,
     ) -> None:
@@ -112,14 +112,14 @@ class ActorCritic(nn.Module):
         self.simulator = None
         self.max_basis_dim = max_basis_dim
 
-        self.gs_norms_embedding_hidden_dim = gs_norms_embedding_hidden_dim
+        self.basis_embedding_hidden_dim = basis_embedding_hidden_dim
         self.action_embedding_dim = action_embedding_dim
         self.dropout_p = dropout_p
 
-        self.gs_norms_encoder = GSNormEncoder(
+        self.basis_encoder = BasisEncoder(
             dropout_p=self.dropout_p,
             max_basis_dim=self.max_basis_dim,
-            hidden_dim=self.gs_norms_embedding_hidden_dim,
+            hidden_dim=self.basis_embedding_hidden_dim,
         )
         self.action_encoder = ActionEncoder(
             max_basis_dim=self.max_basis_dim,
@@ -129,7 +129,7 @@ class ActorCritic(nn.Module):
         self.log_std = nn.Parameter(torch.ones(1))
 
         self.combined_feature_dim = (
-            self.gs_norms_embedding_hidden_dim
+            self.basis_embedding_hidden_dim
             + self.action_embedding_dim
         )
         self.actor_hidden_dim = actor_hidden_dim
@@ -167,16 +167,15 @@ class ActorCritic(nn.Module):
             cached_states = dict()
         tensordict = self.preprocess_inputs(tensordict)
 
-        gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
+        basis = tensordict["basis"]  # [batch_size, basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
         previous_action = tensordict["last_action"]
 
-        if "gs_norms_embedding" in cached_states:
-            gs_norms_embedding = cached_states["gs_norms_embedding"]
+        if "basis_embedding" in cached_states:
+            basis_embedding = cached_states["basis_embedding"]
         else:
-            gs_norms_reshaped = gs_norms.unsqueeze(-1)
-            pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, pad_mask)
+            pad_mask = self.basis_encoder._generate_pad_mask(basis_dim)
+            basis_embedding = self.basis_encoder(basis, pad_mask)
 
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]
@@ -184,11 +183,11 @@ class ActorCritic(nn.Module):
             prev_action_embedding = self.action_encoder(previous_action, basis_dim)
 
         combined = torch.cat([
-            gs_norms_embedding.mean(dim=1),
+            basis_embedding.mean(dim=1),
             prev_action_embedding.mean(dim=1)
         ], dim=1)
 
-        cached_states["gs_norms_embedding"] = gs_norms_embedding
+        cached_states["basis_embedding"] = basis_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
 
         actor_output = self.actor(combined, previous_action, basis_dim)
@@ -209,6 +208,7 @@ class ActorCritic(nn.Module):
 
         return TensorDict(
             {
+                "basis": basis,
                 "gs_norms": gs_norms,
                 "last_action": tensordict["last_action"],
                 "basis_dim": basis_dim,
