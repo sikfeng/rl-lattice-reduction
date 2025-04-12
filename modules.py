@@ -77,15 +77,15 @@ class GSNormEncoder(nn.Module):
     def forward(
         self,
         gs_norms: torch.Tensor,
-        attn_mask: torch.Tensor,
+        pad_mask: torch.Tensor,
     ) -> torch.Tensor:
         x = self.input_projection(gs_norms)
         x = self.pos_encoding(x)
-        x = self.transformer_encoder(x, src_key_padding_mask=attn_mask)
+        x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
         x = self.encoder_projection(x)
         return x
 
-    def _generate_attn_mask(
+    def _generate_pad_mask(
         self,
         seq_lengths: torch.Tensor,
     ):

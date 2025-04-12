@@ -93,8 +93,8 @@ class Simulator(nn.Module):
             gs_norms_embedding = cached_states["gs_norms_embedding"]
         else:
             gs_norms_reshaped = current_gs_norms.unsqueeze(-1)
-            attn_mask = self.gs_norms_encoder._generate_attn_mask(basis_dim)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, attn_mask)
+            pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
+            gs_norms_embedding = self.gs_norms_encoder(gs_norms_reshaped, pad_mask)
 
         if "prev_action_embedding" in cached_states:
             prev_action_embedding = cached_states["prev_action_embedding"]

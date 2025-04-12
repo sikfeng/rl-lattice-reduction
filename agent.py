@@ -645,16 +645,16 @@ class Agent(nn.Module):
                 predicted_time - time_taken[continue_mask]
             ) ** 2
 
-            attn_mask = self.actor_critic.gs_norms_encoder._generate_attn_mask(
+            pad_mask = self.actor_critic.gs_norms_encoder._generate_pad_mask(
                 states["basis_dim"][continue_mask]
             )
             current_embedding = self.actor_critic.gs_norms_encoder(
                 current_features["gs_norms"][continue_mask].unsqueeze(-1),
-                attn_mask
+                pad_mask
             )
             next_embedding = self.actor_critic.gs_norms_encoder(
                 next_features["gs_norms"][continue_mask].unsqueeze(-1),
-                attn_mask
+                pad_mask
             )
 
             inverse_action = (
