@@ -129,10 +129,10 @@ def main():
         help="Weight for simulator reward term (only used if --simulator is enabled).",
     )
     simulator_args.add_argument(
-        "--simulator-gs-norm-weight",
+        "--simulator-basis-weight",
         type=float,
         default=1.0,
-        help="Weight for simulator GS norm loss term (only used if --simulator is enabled).",
+        help="Weight for simulator basis loss term (only used if --simulator is enabled).",
     )
     simulator_args.add_argument(
         "--simulator-time-weight",
@@ -289,7 +289,7 @@ def main():
     )
     simulator_config = SimulatorConfig(
         lr=args.simulator_lr,
-        gs_norm_weight=args.simulator_gs_norm_weight,
+        basis_weight=args.simulator_basis_weight,
         time_weight=args.simulator_time_weight,
         inverse_weight=args.simulator_inverse_weight,
     )
