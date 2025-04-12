@@ -103,6 +103,75 @@ class BasisEncoder(nn.Module):
         return padding_mask
 
 
+class GSNormEncoder(nn.Module):
+    def __init__(
+        self,
+        dropout_p: float,
+        max_basis_dim: int,
+        hidden_dim: int,
+    ) -> None:
+        super().__init__()
+
+        self.max_basis_dim = max_basis_dim
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+
+        self.input_projection = nn.Sequential(
+            nn.Unflatten(1, (-1, 1)),
+            nn.Linear(1, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+        self.pos_encoding = PositionalEncoding(
+            self.hidden_dim,
+            max_len=self.max_basis_dim,
+        )
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=4,
+            dim_feedforward=4 * self.hidden_dim,
+            dropout=dropout_p,
+            batch_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            self.encoder_layer,
+            num_layers=3,
+        )
+        self.encoder_projection = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+
+    def forward(
+        self,
+        gs_norms: torch.Tensor,
+        pad_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        x = self.input_projection(gs_norms)
+        x = self.pos_encoding(x)
+        x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
+        x = self.encoder_projection(x)
+        return x
+
+    def _generate_pad_mask(
+        self,
+        seq_lengths: torch.Tensor,
+    ):
+        batch_size = seq_lengths.size(0)
+        padding_mask = torch.zeros(
+            batch_size,
+            self.max_basis_dim,
+            dtype=torch.bool,
+            device=seq_lengths.device,
+        )
+
+        for i, length in enumerate(seq_lengths.int()):
+            padding_mask[i, length:] = True
+
+        return padding_mask
+
+
 class ActionEncoder(nn.Module):
     def __init__(
         self,

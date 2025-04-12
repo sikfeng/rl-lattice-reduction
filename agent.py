@@ -257,8 +257,7 @@ class Agent(nn.Module):
     def _update_continuous(self) -> Dict[str, float]:
         self.train()
 
-        batch = self.replay_buffer.sample(
-            len(self.replay_buffer)).to(self.device)
+        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
 
         states = batch["state"]
         next_states = batch["next_state"]
@@ -468,8 +467,7 @@ class Agent(nn.Module):
     def _update_discrete(self) -> Dict[str, float]:
         self.train()
 
-        batch = self.replay_buffer.sample(
-            len(self.replay_buffer)).to(self.device)
+        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
 
         states = batch["state"]
         next_states = batch["next_state"]
@@ -624,8 +622,8 @@ class Agent(nn.Module):
         next_states: torch.Tensor,
         time_taken: torch.Tensor,
     ) -> Dict[str, float]:
-        current_features = states
-        next_features = next_states
+        current_features = self.actor_critic.preprocess_inputs(states)
+        next_features = self.actor_critic.preprocess_inputs(next_states)
 
         basis_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
         time_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
