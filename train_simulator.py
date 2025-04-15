@@ -121,7 +121,6 @@ def main():
 
     trainer = SimulatorTrainer(
         env_config=env_config,
-        max_basis_dim=args.max_basis_dim,
         hidden_dim=args.hidden_dim,
         lr=args.lr,
         device=device,
