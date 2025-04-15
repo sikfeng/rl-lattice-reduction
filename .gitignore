@@ -1,4 +1,5 @@
 checkpoint/
+sim_checkpoints/
 random_bases/
 wandb/
 
