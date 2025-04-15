@@ -239,7 +239,6 @@ class SimulatorTrainer(nn.Module):
     def __init__(
         self,
         env_config: ReductionEnvConfig,
-        max_basis_dim: int = 64,
         hidden_dim: int = 64,
         lr: float = 1e-3,
         device: Union[torch.device, str] = "cpu",
@@ -250,10 +249,10 @@ class SimulatorTrainer(nn.Module):
         self.device = device
 
         self.gs_norm_encoder = GSNormEncoder(
-            max_basis_dim=max_basis_dim, hidden_dim=hidden_dim, dropout_p=0.1
+            max_basis_dim=self.env_config.net_dim, hidden_dim=hidden_dim, dropout_p=0.1
         )
         self.action_encoder = ActionEncoder(
-            max_basis_dim=max_basis_dim, embedding_dim=hidden_dim
+            max_basis_dim=self.env_config.net_dim, embedding_dim=hidden_dim
         )
         self.simulator = Simulator(
             gs_norms_encoder=self.gs_norm_encoder,
@@ -423,3 +422,13 @@ class SimulatorTrainer(nn.Module):
         }
         torch.save(checkpoint, path)
         return
+
+    @staticmethod
+    def load(path: Path, device: Union[str, torch.device]):
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        state_dict = checkpoint["state_dict"]
+        env_config = checkpoint["env_config"]
+        trainer = SimulatorTrainer(env_config=env_config)
+        trainer.load_state_dict(state_dict)
+
+        return trainer
