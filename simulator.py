@@ -237,32 +237,3 @@ class Simulator(nn.Module):
 
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
         return simulated_gs_norms
-
-
-class InverseModel(nn.Module):
-    def __init__(
-        self,
-        input_embedding_dim: int,
-        hidden_dim: int,
-        dropout_p: float = 0.1,
-    ) -> None:
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(2 * input_embedding_dim, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(dropout_p),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(
-        self,
-        current_embedding: torch.Tensor,
-        next_embedding: torch.Tensor,
-    ) -> torch.Tensor:
-        combined = torch.cat(
-            [
-                current_embedding.flatten(start_dim=1),
-                next_embedding.flatten(start_dim=1)
-            ], dim=1)
-        return self.model(combined)

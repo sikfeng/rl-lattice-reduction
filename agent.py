@@ -11,7 +11,7 @@ from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
 from actor_critic import ActorCritic
-from simulator import InverseModel, Simulator, SimulatorConfig
+from simulator import Simulator, SimulatorConfig
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
@@ -98,14 +98,8 @@ class Agent(nn.Module):
                 dropout_p=self.agent_config.dropout_p,
                 hidden_dim=self.agent_config.simulator_config.hidden_dim,
             )
-            self.inverse_model = InverseModel(
-                input_embedding_dim=self.actor_critic.gs_norms_encoder.hidden_dim
-                                    * self.agent_config.env_config.net_dim,
-                hidden_dim=self.actor_critic.gs_norms_encoder.hidden_dim,
-                dropout_p=self.agent_config.dropout_p,
-            )
             self.sim_optimizer = optim.AdamW(
-                [*self.simulator.parameters()] + [*self.inverse_model.parameters()],
+                self.simulator.parameters(),
                 lr=self.agent_config.simulator_config.lr,
             )
 
@@ -300,7 +294,6 @@ class Agent(nn.Module):
         if self.agent_config.simulator:
             gs_norm_sim_losses = []
             time_sim_losses = []
-            inverse_losses = []
 
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
@@ -389,8 +382,7 @@ class Agent(nn.Module):
                 )
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
                 time_sim_loss = simulator_losses["time_loss"].nanmean()
-                inverse_loss = simulator_losses["inverse_loss"].nanmean()
-                simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
+                simulator_loss = gs_norm_sim_loss + time_sim_loss
 
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
@@ -428,7 +420,6 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
-                inverse_losses.append(inverse_loss.item())
 
             clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
                        | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
@@ -458,7 +449,6 @@ class Agent(nn.Module):
                 {
                     "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
-                    "update/avg_inverse_loss": np.mean(inverse_losses),
                 }
             )
         return metrics
@@ -507,7 +497,6 @@ class Agent(nn.Module):
         if self.agent_config.simulator:
             gs_norm_sim_losses = []
             time_sim_losses = []
-            inverse_losses = []
 
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
@@ -550,8 +539,7 @@ class Agent(nn.Module):
                 )
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
                 time_sim_loss = simulator_losses["time_loss"].mean()
-                inverse_loss = simulator_losses["inverse_loss"].mean()
-                simulator_loss = gs_norm_sim_loss + time_sim_loss + inverse_loss
+                simulator_loss = gs_norm_sim_loss + time_sim_loss
 
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
@@ -583,7 +571,6 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
-                inverse_losses.append(inverse_loss.item())
 
             clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
                        | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
@@ -609,7 +596,6 @@ class Agent(nn.Module):
                 {
                     "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
-                    "update/avg_inverse_loss": np.mean(inverse_losses),
                 }
             )
         return metrics
@@ -626,7 +612,6 @@ class Agent(nn.Module):
 
         gs_norm_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
         time_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
-        inverse_loss = torch.full_like(actions, float("nan"), device=actions.device)
 
         continue_mask = actions != 0
         if continue_mask.any():
@@ -645,32 +630,8 @@ class Agent(nn.Module):
                 predicted_time - time_taken[continue_mask]
             ) ** 2
 
-            pad_mask = self.actor_critic.gs_norms_encoder._generate_pad_mask(
-                states["basis_dim"][continue_mask]
-            )
-            current_embedding = self.actor_critic.gs_norms_encoder(
-                current_features["gs_norms"][continue_mask],
-                pad_mask
-            )
-            next_embedding = self.actor_critic.gs_norms_encoder(
-                next_features["gs_norms"][continue_mask],
-                pad_mask
-            )
-
-            inverse_action = (
-                self.inverse_model(
-                    current_embedding,
-                    next_embedding,
-                ).squeeze(1)
-                * states["basis_dim"][continue_mask]
-            )
-            inverse_loss[continue_mask] = (
-                inverse_action - actions[continue_mask].float()
-            ) ** 2
-
         losses = {
             "gs_norm_loss": gs_norm_sim_loss,
-            "inverse_loss": inverse_loss,
             "time_loss": time_sim_loss,
         }
         return losses
@@ -688,7 +649,9 @@ class Agent(nn.Module):
     def collect_experiences(self) -> Dict[str, float]:
         with torch.no_grad():
             action, log_prob, value, logits = self.get_action(self.state)
-            next_state, rewards, terminated, truncated, next_info = self.env.step(action)
+            next_state, rewards, terminated, truncated, next_info = self.env.step(
+                action
+            )
             reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
             if self.agent_config.simulator:
                 simulator_losses = self.get_sim_loss(
@@ -697,19 +660,17 @@ class Agent(nn.Module):
                     next_state,
                     next_info["time"],
                 )
-                simulator_reward = self.agent_config.simulator_reward_weight * torch.stack(
-                    [
-                        self.agent_config.simulator_config.gs_norm_weight
-                        * simulator_losses["gs_norm_loss"],
-                        self.agent_config.simulator_config.time_weight
-                        * simulator_losses["time_loss"],
-                        self.agent_config.simulator_config.inverse_weight
-                        * simulator_losses[
-                            "inverse_loss"
-                        ],                    ],
-                    dim=0,
-                ).sum(
-                    dim=0
+                simulator_reward = (
+                    self.agent_config.simulator_reward_weight
+                    * torch.stack(
+                        [
+                            self.agent_config.simulator_config.gs_norm_weight
+                            * simulator_losses["gs_norm_loss"],
+                            self.agent_config.simulator_config.time_weight
+                            * simulator_losses["time_loss"],
+                        ],
+                        dim=0,
+                    ).sum(dim=0)
                 )
                 simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
                 reward = reward + torch.clamp(simulator_reward_, max=10)
@@ -756,7 +717,6 @@ class Agent(nn.Module):
                     metrics[i]["episode/simulator_reward_raw"] = float(simulator_reward[i])
                     metrics[i]["episode/simulator_gs_norm_loss"] = float(simulator_losses["gs_norm_loss"][i])
                     metrics[i]["episode/simulator_time_loss"] = float(simulator_losses["time_loss"][i])
-                    metrics[i]["episode/simulator_inverse_loss"] = float(simulator_losses["inverse_loss"][i])
 
             self.state = next_state
             self.info = next_info
