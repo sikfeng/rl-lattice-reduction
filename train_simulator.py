@@ -137,7 +137,8 @@ def main():
     progress_bar = tqdm(total=args.steps, desc="Training Steps")
     for step in range(args.steps):
         metrics = trainer.train()
-        wandb.log(metrics)
+        for metric in metrics:
+            wandb.log(metric)
         progress_bar.update(1)
 
         if (step + 1) % args.chkpt_interval == 0:

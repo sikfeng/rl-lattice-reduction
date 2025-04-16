@@ -353,20 +353,25 @@ class SimulatorTrainer(nn.Module):
             target_gs_norms=target_gs,
         )
 
-        gs_loss = nn.functional.mse_loss(predicted_gs, target_gs)
-        time_loss = nn.functional.mse_loss(predicted_time, target_time)
-        total_loss = gs_loss + time_loss
+        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1) # nn.functional.mse_loss(predicted_gs, target_gs)
+        time_losses = (predicted_time - target_time) ** 2 # nn.functional.mse_loss(predicted_time, target_time)
+        total_losses = gs_losses + time_losses
+        total_loss = total_losses.mean()
 
         self.sim_optimizer.zero_grad()
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
         self.sim_optimizer.step()
 
-        return {
-            "train/gs_loss": gs_loss.item(),
-            "train/time_loss": time_loss.item(),
-            "train/total_loss": total_loss.item(),
-        }
+        metrics = [{
+            "train/gs_loss": gs_losses[i],
+            "train/time_loss": time_losses[i],
+            "train/total_loss": total_losses[i],
+            "train/predicted_time": predicted_time[i],
+            "train/target_time": target_time[i],
+        } for i in range(predicted_time.size(0))]
+
+        return metrics
 
     def _update_state(self, next_state: TensorDict, next_info: dict) -> None:
         """Updates the current state and environment information."""
