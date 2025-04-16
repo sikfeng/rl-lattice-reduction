@@ -320,7 +320,7 @@ class SimulatorTrainer(nn.Module):
         next_state, _, _, _, next_info = self.env.step(action)
         return (
             self.preprocess_inputs(next_state),
-            next_info["time"] - self.info["time"],
+            next_info["time"],
             next_info,
         )
 
@@ -353,8 +353,8 @@ class SimulatorTrainer(nn.Module):
             target_gs_norms=target_gs,
         )
 
-        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1) # nn.functional.mse_loss(predicted_gs, target_gs)
-        time_losses = (predicted_time - target_time) ** 2 # nn.functional.mse_loss(predicted_time, target_time)
+        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1)
+        time_losses = (predicted_time - target_time) ** 2
         total_losses = gs_losses + time_losses
         total_loss = total_losses.mean()
 
