@@ -70,6 +70,9 @@ def main():
     dist_args.add_argument(
         "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
     )
+    dist_args.add_argument(
+        "--knapsack", action="store_true", help="Use a knapsack distribution."
+    )
 
     arch_args = parser.add_argument_group("Architecture Settings")
     arch_args.add_argument(
@@ -197,6 +200,8 @@ def main():
         args.dist = "qary"
     elif args.ntrulike:
         args.dist = "ntrulike"
+    elif args.knapsack:
+        args.dist = "knapsack"
 
     # Determine selected prediction type
     if args.continuous:

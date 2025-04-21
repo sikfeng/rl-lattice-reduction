@@ -2,7 +2,7 @@
 
 # List of dimensions to generate bases for
 dims=(40 48 56 64 96)
-dists=(uniform qary ntrulike)
+dists=(uniform qary ntrulike knapsack)
 
 for dim in "${dims[@]}"; do
     echo "Generating random basis for n = ${dim}"
