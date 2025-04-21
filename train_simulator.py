@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     dist_group.add_argument("--uniform", action="store_true")
     dist_group.add_argument("--qary", action="store_true")
     dist_group.add_argument("--ntrulike", action="store_true")
+    dist_group.add_argument("--knapsack", action="store_true")
 
     return parser.parse_args()
 
@@ -89,6 +90,8 @@ def main():
         args.dist = "qary"
     elif args.ntrulike:
         args.dist = "ntrulike"
+    elif args.knapsack:
+        args.dist = "knapsack"
 
     # Setup reproducibility
     random.seed(args.seed)
