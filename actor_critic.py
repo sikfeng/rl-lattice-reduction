@@ -203,6 +203,7 @@ class ActorCritic(nn.Module):
 
         _, R = torch.linalg.qr(masked_basis)
         diag = torch.diagonal(R, dim1=-2, dim2=-1).abs().log()
+        diag = torch.nan_to_num(diag, nan=0)
 
         gs_norms = diag * mask.squeeze(1)
 
