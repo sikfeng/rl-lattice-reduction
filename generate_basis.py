@@ -137,7 +137,7 @@ def func(_, n, distribution):
             elif distribution == "ntrulike":
                 basis = generate_ntrulike(n, q=11887)
             elif distribution == "knapsack":
-                basis = generate_knapsack(n, b=6)
+                basis = generate_knapsack(n, b=13)
 
             # Calculate the length of the shortest basis vector in the original basis
             original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
