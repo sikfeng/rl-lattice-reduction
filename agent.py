@@ -697,7 +697,7 @@ class Agent(nn.Module):
                     ),
                     "episode/basis_dim": float(self.state["basis_dim"][i]),
                     "episode/time_taken": float(
-                        next_info["time"][i] - self.info["time"][i]
+                        next_info["time"][i]
                     ),
                     "episode/time_penalty": float(rewards["time_penalty"][i]),
                     "episode/length_reward": float(rewards["length_reward"][i]),
