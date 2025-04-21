@@ -406,8 +406,7 @@ class ReductionEnvironment:
         # 1e-6 because the number of enum calls is really big
         # TODO: set as configurable param
         self.enum_history.append(
-            #1e-6 * float(enum_nodes) - sum(self.enum_history)
-            1e-6 * float(enum_nodes)
+            1e-6 * float(enum_nodes) - sum(self.enum_history)
             if enum_nodes is not None
             else 0
         )
