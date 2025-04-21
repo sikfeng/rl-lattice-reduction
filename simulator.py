@@ -43,7 +43,7 @@ class Simulator(nn.Module):
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.gs_norms_encoder.hidden_dim
-                    + 2 * self.action_encoder.embedding_dim,
+            + 2 * self.action_encoder.embedding_dim,
             nhead=4,
             dim_feedforward=4 * self.hidden_dim,
             dropout=self.dropout_p,
@@ -62,7 +62,6 @@ class Simulator(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
-            nn.Softplus(),
         )
         self.time_simulator = nn.Sequential(
             nn.Linear(
@@ -72,7 +71,6 @@ class Simulator(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
-            nn.Softplus(),
         )
 
     def forward(
@@ -110,7 +108,7 @@ class Simulator(nn.Module):
             ],
             dim=1,
         )
-        simulated_time = self.time_simulator(time_sim_context)
+        simulated_time = self.time_simulator(time_sim_context).exp()
 
         if target_gs_norms is None:
             simulated_gs_norms = self._autoregressive_generation(
@@ -174,8 +172,7 @@ class Simulator(nn.Module):
             tgt_mask = None
             if i > 0:
                 tgt_mask = torch.triu(
-                    torch.ones(i + 1, i + 1, device=device) * float("-inf"),
-                    diagonal=1
+                    torch.ones(i + 1, i + 1, device=device) * float("-inf"), diagonal=1
                 )
 
             decoder_output = self.gs_norm_simulator(
@@ -219,20 +216,15 @@ class Simulator(nn.Module):
             dim=2,
         )
         tgt_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=device) * float("-inf"),
-            diagonal=1
+            torch.ones(seq_len, seq_len, device=device) * float("-inf"), diagonal=1
         )
 
-        gs_norm_sim_context = torch.cat([
-            gs_norms_embedding,
-            prev_action_embedding,
-            current_action_embedding
-        ], dim=2)
+        gs_norm_sim_context = torch.cat(
+            [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
+        )
 
         decoder_output = self.gs_norm_simulator(
-            tgt=tgt,
-            memory=gs_norm_sim_context,
-            tgt_mask=tgt_mask
+            tgt=tgt, memory=gs_norm_sim_context, tgt_mask=tgt_mask
         )
 
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
