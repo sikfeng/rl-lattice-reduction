@@ -76,6 +76,9 @@ def main():
     dist_group.add_argument(
         "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
     )
+    dist_group.add_argument(
+        "--knapsack", action="store_true", help="Use a knapsack distribution."
+    )
 
     args = parser.parse_args()
 
@@ -85,6 +88,8 @@ def main():
         args.dist = "qary"
     elif args.ntrulike:
         args.dist = "ntrulike"
+    elif args.knapsack:
+        args.dist = "knapsack"
 
     random.seed(args.seed)
     np.random.seed(args.seed)

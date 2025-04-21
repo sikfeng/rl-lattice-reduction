@@ -3,6 +3,7 @@ from functools import partial
 import math
 import multiprocessing as mp
 from pathlib import Path
+import random
 
 import fpylll
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
@@ -107,8 +108,24 @@ def generate_ntrulike(n, q):
     return np_basis
 
 
+def generate_knapsack(n, b):
+    assert n % 2 == 0
+
+    basis = IntegerMatrix.random(n - 1, "intrel", bits=b)
+    np_basis = np.zeros((n, n), dtype=int)
+    basis.to_matrix(np_basis)
+
+    subset_size = random.randint(1, n - 2)
+    elements = random.sample(range(n - 1), subset_size)
+
+    for e in elements:
+        np_basis[n - 1][0] += np_basis[e][0]
+
+    return np_basis
+
+
 def func(_, n, distribution):
-    distributions = ["uniform", "qary", "ntrulike"]
+    distributions = ["uniform", "qary", "ntrulike", "knapsack"]
     assert distribution in distributions, "Invalid distribution type."
 
     while True:
@@ -119,6 +136,8 @@ def func(_, n, distribution):
                 basis = generate_qary(n, q=11887, k=3)
             elif distribution == "ntrulike":
                 basis = generate_ntrulike(n, q=11887)
+            elif distribution == "knapsack":
+                basis = generate_knapsack(n, b=13)
 
             # Calculate the length of the shortest basis vector in the original basis
             original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
@@ -156,7 +175,7 @@ def func(_, n, distribution):
 
 
 def main():
-    distributions = ["uniform", "qary", "ntrulike"]
+    distributions = ["uniform", "qary", "ntrulike", "knapsack"]
     parser = argparse.ArgumentParser(description="Generate random basis")
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--distribution", type=str, choices=distributions)
