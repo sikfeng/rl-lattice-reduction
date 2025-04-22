@@ -10,26 +10,6 @@ from modules import GSNormEncoder, ActionEncoder
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
-class Config:
-    def __init__(
-        self,
-        lr: float = 1e-5,
-        hidden_dim: int = 128,  # TODO: must equal actor critic gs norm embedding hidden dim!
-        gs_norm_weight: float = 1.0,
-        time_weight: float = 1.0,
-        inverse_weight: float = 0.05,
-    ) -> None:
-        self.lr = lr
-        self.hidden_dim = hidden_dim
-        self.gs_norm_weight = gs_norm_weight
-        self.time_weight = time_weight
-        self.inverse_weight = inverse_weight
-
-    def __str__(self):
-        self_dict = vars(self)
-        return f"SimulatorConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
-
-
 class BasisStatPredictor(nn.Module):
     def __init__(
         self,
@@ -75,7 +55,6 @@ class BasisStatPredictor(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
-            nn.Sigmoid(),
         )
         self.current_action_predictor = nn.Sequential(
             nn.Linear(
@@ -85,7 +64,6 @@ class BasisStatPredictor(nn.Module):
             nn.LeakyReLU(),
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
-            nn.Sigmoid(),
         )
         self.log_defect_predictor = nn.Sequential(
             nn.Linear(
@@ -371,7 +349,7 @@ class BasisStatTrainer(nn.Module):
         state: TensorDict,
         action: torch.Tensor,
         continue_mask: torch.Tensor,
-        next_info: Dict[str, Any]
+        next_info: Dict[str, Any],
     ) -> dict:
         """Computes loss and updates model weights."""
         if not continue_mask.any():
@@ -475,7 +453,7 @@ class BasisStatTrainer(nn.Module):
         checkpoint = torch.load(path, map_location=device, weights_only=False)
         state_dict = checkpoint["state_dict"]
         env_config = checkpoint["env_config"]
-        trainer = SimulatorTrainer(env_config=env_config)
+        trainer = BasisStatTrainer(env_config=env_config)
         trainer.load_state_dict(state_dict)
 
         return trainer
