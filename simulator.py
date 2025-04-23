@@ -47,6 +47,7 @@ class Simulator(nn.Module):
         self.device = device
         self.teacher_forcing = teacher_forcing
 
+        self.bos_token = nn.Parameter(torch.randn(1, 1))
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.gs_norms_encoder.hidden_dim
             + 2 * self.action_encoder.embedding_dim,
@@ -106,8 +107,30 @@ class Simulator(nn.Module):
 
         current_action_embedding = self.action_encoder(current_action, basis_dim)
 
-        prev_action_embedding = torch.cat([torch.zeros([prev_action_embedding.size(0), 1, prev_action_embedding.size(2)]), prev_action_embedding], dim=1)
-        current_action_embedding = torch.cat([torch.zeros([current_action_embedding.size(0), 1, current_action_embedding.size(2)]), current_action_embedding], dim=1)
+        prev_action_embedding = torch.cat(
+            [
+                torch.zeros(
+                    [prev_action_embedding.size(0), 1, prev_action_embedding.size(2)],
+                    device=prev_action_embedding.device,
+                ),
+                prev_action_embedding,
+            ],
+            dim=1,
+        )
+        current_action_embedding = torch.cat(
+            [
+                torch.zeros(
+                    [
+                        current_action_embedding.size(0),
+                        1,
+                        current_action_embedding.size(2),
+                    ],
+                    device=current_action_embedding.device,
+                ),
+                current_action_embedding,
+            ],
+            dim=1,
+        )
         time_sim_context = torch.cat(
             [
                 gs_norms_embedding[:, 0, :],
@@ -153,12 +176,7 @@ class Simulator(nn.Module):
             (gs_norms_embedding.size(0), gs_norms_embedding.size(1)),
             device=device,
         )
-        generated_sequence = torch.zeros(
-            (gs_norms_embedding.size(0), 1),
-            device=device,
-        )
-
-        # encoder features
+        generated_sequence = self.bos_token.expand(gs_norms_embedding.size(0), 1)
         gs_norm_sim_context = torch.cat(
             [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
         )
@@ -212,9 +230,11 @@ class Simulator(nn.Module):
         target_gs_norms: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        tgt = self.gs_norms_encoder.input_projection(target_gs_norms)
+        bos = self.bos_token.expand(target_gs_norms.size(0), 1)
+        tgt = torch.cat([bos, target_gs_norms], dim=1)
+        tgt = self.gs_norms_encoder.input_projection(tgt)
         tgt = self.gs_norms_encoder.pos_encoding(tgt)
-        seq_len = target_gs_norms.size(1)
+        seq_len = tgt.size(1)
         tgt = torch.cat(
             [
                 tgt,
