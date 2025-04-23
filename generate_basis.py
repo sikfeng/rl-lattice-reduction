@@ -109,8 +109,6 @@ def generate_ntrulike(n, q):
 
 
 def generate_knapsack(n, b):
-    assert n % 2 == 0
-
     basis = IntegerMatrix.random(n - 1, "intrel", bits=b)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)

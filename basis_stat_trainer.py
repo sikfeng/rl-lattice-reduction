@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from tensordict import TensorDict
 import torch
@@ -10,25 +10,21 @@ from modules import GSNormEncoder, ActionEncoder
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
-class SimulatorConfig:
+class BasisStatPredictorConfig:
     def __init__(
         self,
         lr: float = 1e-5,
         hidden_dim: int = 128,  # TODO: must equal actor critic gs norm embedding hidden dim!
-        gs_norm_weight: float = 1.0,
-        time_weight: float = 1.0,
     ) -> None:
         self.lr = lr
         self.hidden_dim = hidden_dim
-        self.gs_norm_weight = gs_norm_weight
-        self.time_weight = time_weight
 
     def __str__(self):
         self_dict = vars(self)
         return f"SimulatorConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
 
 
-class Simulator(nn.Module):
+class BasisStatPredictor(nn.Module):
     def __init__(
         self,
         gs_norms_encoder: GSNormEncoder,
@@ -55,7 +51,7 @@ class Simulator(nn.Module):
             dropout=self.dropout_p,
             batch_first=True,
         )
-        self.gs_norm_simulator = nn.TransformerDecoder(
+        self.gs_norm_decoder = nn.TransformerDecoder(
             decoder_layer,
             num_layers=3,
         )
@@ -69,7 +65,34 @@ class Simulator(nn.Module):
             nn.Dropout(p=self.dropout_p),
             nn.Linear(self.hidden_dim, 1),
         )
-        self.time_simulator = nn.Sequential(
+        self.previous_action_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.current_action_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.log_defect_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.basis_dim_predictor = nn.Sequential(
             nn.Linear(
                 self.hidden_dim + 2 * self.action_encoder.embedding_dim,
                 self.hidden_dim,
@@ -106,7 +129,7 @@ class Simulator(nn.Module):
 
         current_action_embedding = self.action_encoder(current_action, basis_dim)
 
-        time_sim_context = torch.cat(
+        pred_context = torch.cat(
             [
                 gs_norms_embedding.mean(dim=1),
                 prev_action_embedding.mean(dim=1),
@@ -114,10 +137,13 @@ class Simulator(nn.Module):
             ],
             dim=1,
         )
-        simulated_time = self.time_simulator(time_sim_context).exp()
+        previous_action_pred = self.previous_action_predictor(pred_context)
+        current_action_pred = self.current_action_predictor(pred_context)
+        log_defect_pred = self.log_defect_predictor(pred_context)
+        basis_dim_pred = self.basis_dim_predictor(pred_context)
 
         if target_gs_norms is None:
-            simulated_gs_norms = self._autoregressive_generation(
+            pred_gs_norms = self._autoregressive_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
@@ -125,7 +151,7 @@ class Simulator(nn.Module):
                 device=device,
             )
         else:
-            simulated_gs_norms = self._teacher_forced_generation(
+            pred_gs_norms = self._teacher_forced_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
@@ -136,7 +162,15 @@ class Simulator(nn.Module):
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
 
-        return simulated_gs_norms, simulated_time.squeeze(-1), cached_states
+        preds = {
+            "gs_norms": pred_gs_norms,
+            "previous_action": previous_action_pred.squeeze(-1),
+            "current_action": current_action_pred.squeeze(-1),
+            "log_defect": log_defect_pred.squeeze(-1),
+            "basis_dim": basis_dim_pred.squeeze(-1),
+        }
+
+        return preds, cached_states
 
     def _autoregressive_generation(
         self,
@@ -181,7 +215,7 @@ class Simulator(nn.Module):
                     torch.ones(i + 1, i + 1, device=device) * float("-inf"), diagonal=1
                 )
 
-            decoder_output = self.gs_norm_simulator(
+            decoder_output = self.gs_norm_decoder(
                 tgt=tgt,
                 memory=gs_norm_sim_context,
                 tgt_mask=tgt_mask,
@@ -229,7 +263,7 @@ class Simulator(nn.Module):
             [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
         )
 
-        decoder_output = self.gs_norm_simulator(
+        decoder_output = self.gs_norm_decoder(
             tgt=tgt, memory=gs_norm_sim_context, tgt_mask=tgt_mask
         )
 
@@ -241,8 +275,7 @@ class Simulator(nn.Module):
         state: TensorDict,
         action: torch.Tensor,
         continue_mask: torch.Tensor,
-        next_state: TensorDict,
-        time_taken: torch.Tensor,
+        current_info: Dict[str, Any],
     ) -> dict:
         """Computes loss and updates model weights."""
         if not continue_mask.any():
@@ -253,11 +286,10 @@ class Simulator(nn.Module):
         prev_act = state["last_action"][continue_mask]
         basis_dim = state["basis_dim"][continue_mask]
         current_act = action[continue_mask].float()
-        target_gs = next_state["gs_norms"][continue_mask]
-        target_time = time_taken[continue_mask]
+        log_defects = current_info["log_defect"][continue_mask]
 
         # Model predictions
-        predicted_gs, predicted_time, _ = self(
+        preds, _ = self(
             current_gs_norms=current_gs,
             previous_action=prev_act,
             current_action=current_act,
@@ -265,26 +297,25 @@ class Simulator(nn.Module):
             target_gs_norms=current_gs if self.teacher_forcing else None,
         )
 
-        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1)
-        time_losses = (predicted_time - target_time) ** 2
-        total_losses = gs_losses + time_losses
+        losses = {
+            "gs_losses": ((preds["gs_norms"] - current_gs) ** 2).mean(dim=1),
+            "prev_act_losses": (preds["previous_action"] - prev_act) ** 2,
+            "current_act_losses": (preds["current_action"] - current_act) ** 2,
+            "log_defect_losses": (preds["log_defect"] - log_defects) ** 2,
+            "basis_dim_losses": (preds["basis_dim"] - basis_dim) ** 2,
+        }
+        total_losses = sum(losses.values())
         total_loss = total_losses.mean()
 
         metrics = [
-            {
-                "train/gs_loss": gs_losses[i],
-                "train/time_loss": time_losses[i],
-                "train/total_loss": total_losses[i],
-                "train/predicted_time": predicted_time[i],
-                "train/target_time": target_time[i],
-            }
-            for i in range(predicted_time.size(0))
+            {f"train/{loss_type}": losses[loss_type][i] for loss_type in losses}
+            for i in range(total_losses.size(0))
         ]
 
         return metrics, total_loss
 
 
-class SimulatorTrainer(nn.Module):
+class BasisStatTrainer(nn.Module):
     def __init__(
         self,
         env_config: ReductionEnvConfig,
@@ -304,7 +335,7 @@ class SimulatorTrainer(nn.Module):
         self.action_encoder = ActionEncoder(
             max_basis_dim=self.env_config.net_dim, embedding_dim=hidden_dim
         )
-        self.simulator = Simulator(
+        self.basis_stat_predictor = BasisStatPredictor(
             gs_norms_encoder=self.gs_norm_encoder,
             action_encoder=self.action_encoder,
             hidden_dim=hidden_dim,
@@ -313,7 +344,7 @@ class SimulatorTrainer(nn.Module):
         )
 
         self.optimizer = optim.AdamW(
-            self.simulator.parameters(),
+            self.basis_stat_predictor.parameters(),
             lr=lr,
         )
 
@@ -328,10 +359,13 @@ class SimulatorTrainer(nn.Module):
         with torch.no_grad():
             state = self._get_processed_state()
             action, continue_mask = self._generate_actions(state)
-            next_state, time_taken, next_info = self._step_environment(action)
+            next_state, next_info = self._step_environment(action)
 
-        metrics, loss = self.simulator._compute_loss(
-            state, action, continue_mask, next_state, time_taken
+        metrics, loss = self.basis_stat_predictor._compute_loss(
+            state,
+            action,
+            continue_mask,
+            self.info,
         )
 
         self.optimizer.zero_grad()
@@ -376,7 +410,6 @@ class SimulatorTrainer(nn.Module):
         next_state, _, _, _, next_info = self.env.step(action)
         return (
             self.preprocess_inputs(next_state),
-            next_info["time"],
             next_info,
         )
 
@@ -421,7 +454,7 @@ class SimulatorTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, time_taken, next_info = self._step_environment(action)
 
-        metrics, loss = self.simulator._compute_loss(
+        metrics, loss = self.basis_stat_predictor._compute_loss(
             state, action, continue_mask, next_state, time_taken
         )
         self._update_state(next_state, next_info)
@@ -440,7 +473,7 @@ class SimulatorTrainer(nn.Module):
         checkpoint = torch.load(path, map_location=device, weights_only=False)
         state_dict = checkpoint["state_dict"]
         env_config = checkpoint["env_config"]
-        trainer = SimulatorTrainer(env_config=env_config)
+        trainer = BasisStatTrainer(env_config=env_config)
         trainer.load_state_dict(state_dict)
 
         return trainer

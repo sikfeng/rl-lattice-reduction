@@ -11,8 +11,9 @@ from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
 from actor_critic import ActorCritic
-from simulator import Simulator, SimulatorConfig
+from basis_stat_trainer import BasisStatPredictor, BasisStatPredictorConfig
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
+from simulator import Simulator, SimulatorConfig
 
 
 class PPOConfig:
@@ -48,22 +49,42 @@ class AgentConfig:
         dropout_p: float = 0.1,
         env_config: Optional[ReductionEnvConfig] = None,
         simulator: bool = False,
+        basis_stat_predictor: bool = False,
+        teacher_forcing: bool = False,
         pred_type: str = Union[Literal["continuous"], Literal["discrete"]],
         simulator_reward_weight: float = 0.1,
+        basis_stat_predictor_reward_weight: float = 0.1,
         simulator_config: Optional[SimulatorConfig] = None,
+        basis_stat_predictor_config: Optional[BasisStatPredictorConfig] = None,
     ) -> None:
         self.ppo_config = ppo_config
         self.device = device
         self.batch_size = batch_size
         self.dropout_p = dropout_p
+
         self.simulator = simulator
+        self.basis_stat_predictor = basis_stat_predictor
+        self.teacher_forcing = teacher_forcing
+
         self.pred_type = pred_type
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
         self.simulator_reward_weight = 0.0 if not simulator else simulator_reward_weight
+        self.basis_stat_predictor_reward_weight = (
+            0.0 if not basis_stat_predictor else basis_stat_predictor_reward_weight
+        )
         self.simulator_config = (
             None
             if not simulator
             else simulator_config if simulator_config is not None else SimulatorConfig()
+        )
+        self.basis_stat_predictor_config = (
+            None
+            if not basis_stat_predictor
+            else (
+                basis_stat_predictor_config
+                if basis_stat_predictor_config is not None
+                else BasisStatPredictorConfig()
+            )
         )
 
     def __str__(self):
@@ -72,10 +93,7 @@ class AgentConfig:
 
 
 class Agent(nn.Module):
-    def __init__(
-        self,
-        agent_config: AgentConfig
-    ) -> None:
+    def __init__(self, agent_config: AgentConfig) -> None:
         super().__init__()
         self.agent_config = agent_config
         self.device = self.agent_config.device
@@ -91,16 +109,32 @@ class Agent(nn.Module):
         )
 
         self.simulator = None
+        self.basis_stat_predictor = None
         if self.agent_config.simulator:
             self.simulator = Simulator(
                 gs_norms_encoder=self.actor_critic.gs_norms_encoder,
                 action_encoder=self.actor_critic.action_encoder,
                 dropout_p=self.agent_config.dropout_p,
                 hidden_dim=self.agent_config.simulator_config.hidden_dim,
+                device=self.device,
+                teacher_forcing=self.agent_config.teacher_forcing,
             )
             self.sim_optimizer = optim.AdamW(
                 self.simulator.parameters(),
                 lr=self.agent_config.simulator_config.lr,
+            )
+        if self.agent_config.basis_stat_predictor:
+            self.basis_stat_predictor = BasisStatPredictor(
+                gs_norms_encoder=self.actor_critic.gs_norms_encoder,
+                action_encoder=self.actor_critic.action_encoder,
+                dropout_p=self.agent_config.dropout_p,
+                hidden_dim=self.agent_config.basis_stat_predictor_config.hidden_dim,
+                device=self.device,
+                teacher_forcing=self.agent_config.teacher_forcing,
+            )
+            self.basis_stat_predictor_optimizer = optim.AdamW(
+                self.basis_stat_predictor.parameters(),
+                lr=self.agent_config.basis_stat_predictor_config.lr,
             )
 
         self.mse_loss = nn.MSELoss()
@@ -124,27 +158,6 @@ class Agent(nn.Module):
         self.state = self.state.to(self.device)
         self.info = self.info.to(self.device)
 
-    def simulate(
-        self,
-        current_gs_norms: torch.Tensor,
-        previous_action: torch.Tensor,
-        basis_dim: torch.Tensor,
-        current_action: torch.Tensor,
-        cached_states: Dict[str, torch.Tensor] = None,
-        target_gs_norms: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        if self.simulator is None:
-            raise RuntimeError("ActorCritic model not initialized to simulate.")
-
-        return self.simulator(
-            current_gs_norms=current_gs_norms,
-            previous_action=previous_action,
-            current_action=current_action,
-            basis_dim=basis_dim,
-            cached_states=cached_states,
-            target_gs_norms=target_gs_norms,
-        )
-
     def store_transition(
         self,
         state: TensorDict[str, torch.Tensor],
@@ -153,7 +166,8 @@ class Agent(nn.Module):
         reward: torch.Tensor,
         done: torch.Tensor,
         next_state: TensorDict[str, torch.Tensor],
-        time_taken: torch.Tensor,
+        next_info: TensorDict[str, torch.Tensor],
+        current_info: TensorDict[str, torch.Tensor],
     ):
         td = TensorDict(
             {
@@ -171,7 +185,8 @@ class Agent(nn.Module):
                     "last_action": next_state["last_action"],
                     "basis_dim": next_state["basis_dim"],
                 },
-                "time_taken": time_taken,
+                "next_info": next_info,
+                "current_info": current_info,
             },
             batch_size=[action.size(0)],
         )
@@ -186,7 +201,9 @@ class Agent(nn.Module):
             logits, value, _ = self.actor_critic(state)
 
             if self.agent_config.pred_type == "continuous":
-                termination_prob, block_size_float, block_size_std = logits.unbind(dim=1)
+                termination_prob, block_size_float, block_size_std = logits.unbind(
+                    dim=1
+                )
                 if self.training:
                     terminate_dist = torch.distributions.Bernoulli(termination_prob)
                     terminate = terminate_dist.sample()
@@ -295,6 +312,9 @@ class Agent(nn.Module):
             gs_norm_sim_losses = []
             time_sim_losses = []
 
+        if self.agent_config.basis_stat_predictor:
+            basis_stat_losses = {}
+
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
             term_probs, block_mean_preds, block_pred_std = logits.unbind(dim=1)
@@ -378,15 +398,29 @@ class Agent(nn.Module):
                     actions,
                     states,
                     next_states,
-                    batch["time_taken"],
+                    batch["next_info"]["time"],
                 )
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
                 time_sim_loss = simulator_losses["time_loss"].nanmean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss
 
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                    states=states,
+                    actions=actions,
+                    continue_mask=continue_mask,
+                    current_info=batch["current_info"],
+                )
+                basis_stat_loss = {
+                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
+                }
+                basis_stat_pred_loss = sum(basis_stat_loss.values())
+
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
                 self.sim_optimizer.zero_grad()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.zero_grad()
 
             actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -397,13 +431,21 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 simulator_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
-                    [*self.actor_critic.parameters(), *self.simulator.parameters()],
+                    self.parameters(),
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
                     self.agent_config.ppo_config.clip_grad_norm,
                 )
 
             self.optimizer.step()
             if self.agent_config.simulator:
                 self.sim_optimizer.step()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
@@ -420,9 +462,13 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
+            if self.agent_config.basis_stat_predictor:
+                for k in basis_stat_loss:
+                    basis_stat_losses[k] = basis_stat_loss[k].item()
 
-            clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
-                       | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
+            clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
+                ratios > 1 + self.agent_config.ppo_config.clip_epsilon
+            )
             clip_fractions.append(clipped.float().mean().item())
 
             approx_kl = (old_log_probs - new_log_probs).mean().item()
@@ -451,8 +497,13 @@ class Agent(nn.Module):
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
                 }
             )
+        if self.agent_config.basis_stat_predictor:
+            metrics.update(
+                {f"update/{k}": np.mean(v) for k, v in basis_stat_losses.items()}
+            )
         return metrics
 
+    # TODO: needs fixing, update with basis stat predictor
     def _update_discrete(self) -> Dict[str, float]:
         self.train()
 
@@ -572,8 +623,9 @@ class Agent(nn.Module):
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
 
-            clipped = ((ratios < 1 - self.agent_config.ppo_config.clip_epsilon)
-                       | (ratios > 1 + self.agent_config.ppo_config.clip_epsilon))
+            clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
+                ratios > 1 + self.agent_config.ppo_config.clip_epsilon
+            )
             clip_fractions.append(clipped.float().mean().item())
 
             approx_kl = (old_log_probs - new_log_probs).mean().item()
@@ -615,12 +667,16 @@ class Agent(nn.Module):
 
         continue_mask = actions != 0
         if continue_mask.any():
-            predicted_gs_norms, predicted_time, _ = self.simulate(
+            predicted_gs_norms, predicted_time, _ = self.simulator(
                 current_gs_norms=current_features["gs_norms"][continue_mask],
                 previous_action=current_features["last_action"][continue_mask],
                 basis_dim=current_features["basis_dim"][continue_mask],
                 current_action=actions[continue_mask].float(),
-                target_gs_norms=next_features["gs_norms"][continue_mask],
+                target_gs_norms=(
+                    next_features["gs_norms"][continue_mask]
+                    if self.agent_config.teacher_forcing
+                    else None
+                ),
             )
 
             gs_norm_sim_loss[continue_mask] = (
@@ -636,9 +692,67 @@ class Agent(nn.Module):
         }
         return losses
 
+    def get_basis_stat_pred_loss(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        continue_mask: torch.Tensor,
+        current_info: TensorDict[str, torch.Tensor],
+    ) -> Dict[str, float]:
+        current_features = self.actor_critic.preprocess_inputs(states)
+
+        losses = {
+            "gs_losses": torch.full_like(actions, float("nan"), device=actions.device),
+            "prev_act_losses": torch.full_like(
+                actions, float("nan"), device=actions.device
+            ),
+            "current_act_losses": torch.full_like(
+                actions, float("nan"), device=actions.device
+            ),
+            "log_defect_losses": torch.full_like(
+                actions, float("nan"), device=actions.device
+            ),
+            "basis_dim_losses": torch.full_like(
+                actions, float("nan"), device=actions.device
+            ),
+        }
+
+        continue_mask = actions != 0
+        if continue_mask.any():
+            preds, _ = self.basis_stat_predictor(
+                current_gs_norms=current_features["gs_norms"][continue_mask],
+                previous_action=current_features["last_action"][continue_mask],
+                current_action=actions[continue_mask].float(),
+                basis_dim=current_features["basis_dim"][continue_mask],
+                target_gs_norms=(
+                    current_features["gs_norms"][continue_mask]
+                    if self.agent_config.teacher_forcing
+                    else None
+                ),
+            )
+
+            losses["gs_losses"][continue_mask] = (
+                (preds["gs_norms"] - current_features["gs_norms"][continue_mask]) ** 2
+            ).mean(dim=1)
+            losses["prev_act_losses"][continue_mask] = (
+                preds["previous_action"]
+                - current_features["last_action"][continue_mask]
+            ) ** 2
+            losses["current_act_losses"][continue_mask] = (
+                preds["current_action"] - actions[continue_mask].float()
+            ) ** 2
+            losses["log_defect_losses"][continue_mask] = (
+                preds["log_defect"] - current_info["log_defect"][continue_mask].float()
+            ) ** 2
+            losses["basis_dim_losses"][continue_mask] = (
+                preds["basis_dim"] - current_features["basis_dim"][continue_mask]
+            ) ** 2
+
+        return losses
+
     def update(self) -> Dict[str, float]:
         if len(self.replay_buffer) < self.agent_config.ppo_config.minibatch_size:
-            return dict()
+            return {}
 
         if self.agent_config.pred_type == "continuous":
             metrics = self._update_continuous()
@@ -674,22 +788,49 @@ class Agent(nn.Module):
                 )
                 simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
                 reward = reward + torch.clamp(simulator_reward_, max=10)
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                    states=self.state,
+                    actions=action,
+                    continue_mask=action != 0,
+                    current_info=self.info,
+                )
+                basis_stat_pred_reward = (
+                    self.agent_config.basis_stat_predictor_reward_weight
+                    * torch.stack(
+                        [
+                            basis_stat_pred_losses["gs_losses"],
+                            basis_stat_pred_losses["prev_act_losses"],
+                            basis_stat_pred_losses["current_act_losses"],
+                            basis_stat_pred_losses["log_defect_losses"],
+                            basis_stat_pred_losses["basis_dim_losses"],
+                        ],
+                        dim=0,
+                    ).sum(dim=0)
+                )
+                basis_stat_pred_reward_ = torch.where(
+                    action == 0, 0, basis_stat_pred_reward
+                )
+                reward = reward + torch.clamp(basis_stat_pred_reward_, max=10)
             done = terminated | truncated
 
             self.store_transition(
-                self.state,
-                action,
-                log_prob,
-                reward,
-                done,
-                next_state,
-                next_info["time"],
+                state=self.state,
+                action=action,
+                log_prob=log_prob,
+                reward=reward,
+                done=done,
+                next_state=next_state,
+                next_info=next_info,
+                current_info=self.info,
             )
 
             metrics = [
                 {
                     "episode/action": float(action[i]),
-                    "episode/block_size": float("nan" if action[i] == 0 else action[i] + 1),
+                    "episode/block_size": float(
+                        "nan" if action[i] == 0 else action[i] + 1
+                    ),
                     "episode/block_size_rel": float(
                         "nan"
                         if action[i] == 0
@@ -713,10 +854,42 @@ class Agent(nn.Module):
             ]
             if self.agent_config.simulator:
                 for i in range(reward.size(0)):
-                    metrics[i]["episode/simulator_reward"] = float(torch.clamp(simulator_reward[i], max=10))
-                    metrics[i]["episode/simulator_reward_raw"] = float(simulator_reward[i])
-                    metrics[i]["episode/simulator_gs_norm_loss"] = float(simulator_losses["gs_norm_loss"][i])
-                    metrics[i]["episode/simulator_time_loss"] = float(simulator_losses["time_loss"][i])
+                    metrics[i]["episode/simulator_reward"] = float(
+                        torch.clamp(simulator_reward[i], max=10)
+                    )
+                    metrics[i]["episode/simulator_reward_raw"] = float(
+                        simulator_reward[i]
+                    )
+                    metrics[i]["episode/simulator_gs_norm_loss"] = float(
+                        simulator_losses["gs_norm_loss"][i]
+                    )
+                    metrics[i]["episode/simulator_time_loss"] = float(
+                        simulator_losses["time_loss"][i]
+                    )
+
+            if self.agent_config.basis_stat_predictor:
+                for i in range(reward.size(0)):
+                    metrics[i]["episode/basis_stat_pred_reward"] = float(
+                        torch.clamp(basis_stat_pred_reward[i], max=10)
+                    )
+                    metrics[i]["episode/basis_stat_pred_reward_raw"] = float(
+                        basis_stat_pred_reward[i]
+                    )
+                    metrics[i]["episode/basis_stat_pred_gs_loss"] = float(
+                        basis_stat_pred_losses["gs_losses"][i]
+                    )
+                    metrics[i]["episode/basis_stat_pred_prev_act_loss"] = float(
+                        basis_stat_pred_losses["prev_act_losses"][i]
+                    )
+                    metrics[i]["episode/basis_stat_pred_current_act_loss"] = float(
+                        basis_stat_pred_losses["current_act_losses"][i]
+                    )
+                    metrics[i]["episode/basis_stat_pred_log_defect_loss"] = float(
+                        basis_stat_pred_losses["log_defect_losses"][i]
+                    )
+                    metrics[i]["episode/basis_stat_pred_basis_dim_loss"] = float(
+                        basis_stat_pred_losses["basis_dim_losses"][i]
+                    )
 
             self.state = next_state
             self.info = next_info
@@ -724,8 +897,7 @@ class Agent(nn.Module):
             return metrics
 
     def evaluate(
-        self,
-        batch: TensorDict[str, Union[torch.Tensor, TensorDict[str, torch.Tensor]]]
+        self, batch: TensorDict[str, Union[torch.Tensor, TensorDict[str, torch.Tensor]]]
     ) -> Dict:
         self.eval()
         state, info = self.env.reset(options=batch)
@@ -760,7 +932,7 @@ class Agent(nn.Module):
             "success": float(min(shortest_length_history) < 1.05),
             "time": sum(time_history),
             "length_improvement": shortest_length_history[0]
-                                  - min(shortest_length_history),
+            - min(shortest_length_history),
         }
         metrics.update(episode_rewards)
 
