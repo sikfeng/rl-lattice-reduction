@@ -48,6 +48,9 @@ class GSNormEncoder(nn.Module):
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
 
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
+
         self.input_projection = nn.Sequential(
             nn.Unflatten(1, (-1, 1)),
             nn.Linear(1, self.hidden_dim),
@@ -56,7 +59,7 @@ class GSNormEncoder(nn.Module):
         )
         self.pos_encoding = PositionalEncoding(
             self.hidden_dim,
-            max_len=self.max_basis_dim,
+            max_len=self.max_basis_dim + 1,
         )
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
@@ -81,6 +84,10 @@ class GSNormEncoder(nn.Module):
         pad_mask: torch.Tensor,
     ) -> torch.Tensor:
         x = self.input_projection(gs_norms)
+
+        cls_tokens = self.cls_token.expand(gs_norms.size(0), -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
         x = self.pos_encoding(x)
         x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
         x = self.encoder_projection(x)
@@ -93,13 +100,13 @@ class GSNormEncoder(nn.Module):
         batch_size = seq_lengths.size(0)
         padding_mask = torch.zeros(
             batch_size,
-            self.max_basis_dim,
+            self.max_basis_dim + 1,
             dtype=torch.bool,
             device=seq_lengths.device,
         )
 
         for i, length in enumerate(seq_lengths.int()):
-            padding_mask[i, length:] = True
+            padding_mask[i, length + 1 :] = True
 
         return padding_mask
 

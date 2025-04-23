@@ -129,9 +129,11 @@ class BasisStatPredictor(nn.Module):
 
         current_action_embedding = self.action_encoder(current_action, basis_dim)
 
+        prev_action_embedding = torch.cat([torch.zeros([prev_action_embedding.size(0), 1, prev_action_embedding.size(2)]), prev_action_embedding], dim=1)
+        current_action_embedding = torch.cat([torch.zeros([current_action_embedding.size(0), 1, current_action_embedding.size(2)]), current_action_embedding], dim=1)
         pred_context = torch.cat(
             [
-                gs_norms_embedding.mean(dim=1),
+                gs_norms_embedding[:, 0, :],
                 prev_action_embedding.mean(dim=1),
                 current_action_embedding.mean(dim=1),
             ],
