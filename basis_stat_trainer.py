@@ -17,6 +17,8 @@ class BasisStatPredictor(nn.Module):
         action_encoder: ActionEncoder,
         dropout_p: float = 0.1,
         hidden_dim: int = 128,
+        device: Union[torch.device, str] = "cpu",
+        teacher_forcing: bool = False,
     ) -> None:
         super().__init__()
 
@@ -24,6 +26,8 @@ class BasisStatPredictor(nn.Module):
         self.action_encoder = action_encoder
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
+        self.device = device
+        self.teacher_forcing = teacher_forcing
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.gs_norms_encoder.hidden_dim
@@ -252,6 +256,50 @@ class BasisStatPredictor(nn.Module):
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
         return simulated_gs_norms
 
+    def _compute_loss_and_update(
+        self,
+        state: TensorDict,
+        action: torch.Tensor,
+        continue_mask: torch.Tensor,
+        next_info: Dict[str, Any],
+    ) -> dict:
+        """Computes loss and updates model weights."""
+        if not continue_mask.any():
+            return {}, torch.tensor([0.0], device=self.device, requires_grad=True)
+
+        # Extract relevant tensors for loss calculation
+        current_gs = state["gs_norms"][continue_mask]
+        prev_act = state["last_action"][continue_mask]
+        basis_dim = state["basis_dim"][continue_mask]
+        current_act = action[continue_mask].float()
+        log_defects = next_info["log_defect"][continue_mask]
+
+        # Model predictions
+        preds, _ = self(
+            current_gs_norms=current_gs,
+            previous_action=prev_act,
+            current_action=current_act,
+            basis_dim=basis_dim,
+            target_gs_norms=current_gs if self.teacher_forcing else None,
+        )
+
+        losses = {
+            "gs_losses": ((preds["gs_norms"] - current_gs) ** 2).mean(dim=1),
+            "prev_act_losses": (preds["previous_action"] - prev_act) ** 2,
+            "current_act_losses": (preds["current_action"] - current_act) ** 2,
+            "log_defect_losses": (preds["log_defect"] - log_defects) ** 2,
+            "basis_dim_losses": (preds["basis_dim"] - basis_dim) ** 2,
+        }
+        total_losses = sum(losses.values())
+        total_loss = total_losses.mean()
+
+        metrics = [
+            {f"train/{loss_type}": losses[loss_type][i] for loss_type in losses}
+            for i in range(total_losses.size(0))
+        ]
+
+        return metrics, total_loss
+
 
 class BasisStatTrainer(nn.Module):
     def __init__(
@@ -277,14 +325,12 @@ class BasisStatTrainer(nn.Module):
             gs_norms_encoder=self.gs_norm_encoder,
             action_encoder=self.action_encoder,
             hidden_dim=hidden_dim,
+            device=device,
+            teacher_forcing=teacher_forcing,
         )
 
-        self.sim_optimizer = optim.AdamW(
-            [
-                *self.basis_stat_predictor.parameters(),
-                *self.gs_norm_encoder.parameters(),
-                *self.action_encoder.parameters(),
-            ],
+        self.optimizer = optim.AdamW(
+            self.basis_stat_predictor.parameters(),
             lr=lr,
         )
 
@@ -301,12 +347,18 @@ class BasisStatTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, next_info = self._step_environment(action)
 
-        metrics = self._compute_loss_and_update(
+        metrics, loss = self.basis_stat_predictor._compute_loss_and_update(
             state,
             action,
             continue_mask,
             next_info,
         )
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+        self.optimizer.step()
+
         self._update_state(next_state, next_info)
         return metrics
 
@@ -346,55 +398,6 @@ class BasisStatTrainer(nn.Module):
             self.preprocess_inputs(next_state),
             next_info,
         )
-
-    def _compute_loss_and_update(
-        self,
-        state: TensorDict,
-        action: torch.Tensor,
-        continue_mask: torch.Tensor,
-        next_info: Dict[str, Any],
-    ) -> dict:
-        """Computes loss and updates model weights."""
-        if not continue_mask.any():
-            return {}
-
-        # Extract relevant tensors for loss calculation
-        current_gs = state["gs_norms"][continue_mask]
-        prev_act = state["last_action"][continue_mask]
-        basis_dim = state["basis_dim"][continue_mask]
-        current_act = action[continue_mask].float()
-        log_defects = next_info["log_defect"][continue_mask]
-
-        # Model predictions
-        preds, _ = self.basis_stat_predictor(
-            current_gs_norms=current_gs,
-            previous_action=prev_act,
-            current_action=current_act,
-            basis_dim=basis_dim,
-            target_gs_norms=current_gs if self.teacher_forcing else None,
-        )
-
-        losses = {
-            "gs_losses": ((preds["gs_norms"] - current_gs) ** 2).mean(dim=1),
-            "prev_act_losses": (preds["previous_action"] - prev_act) ** 2,
-            "current_act_losses": (preds["current_action"] - current_act) ** 2,
-            "log_defect_losses": (preds["log_defect"] - log_defects) ** 2,
-            "basis_dim_losses": (preds["basis_dim"] - basis_dim) ** 2,
-        }
-        total_losses = sum(losses.values())
-        total_loss = total_losses.mean()
-
-        self.sim_optimizer.zero_grad()
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-        self.sim_optimizer.step()
-
-        metrics = [
-            {f"train/{loss_type}": losses[loss_type][i] for loss_type in losses}
-            for i in range(total_losses.size(0))
-        ]
-
-        return metrics
 
     def _update_state(self, next_state: TensorDict, next_info: dict) -> None:
         """Updates the current state and environment information."""
