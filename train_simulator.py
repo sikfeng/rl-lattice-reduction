@@ -127,6 +127,7 @@ def main():
         hidden_dim=args.hidden_dim,
         lr=args.lr,
         device=device,
+        teacher_forcing=args.teacher_forcing,
     ).to(device)
 
     # Initialize WandB

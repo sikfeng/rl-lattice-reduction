@@ -150,7 +150,7 @@ class Simulator(nn.Module):
             device=device,
         )
         generated_sequence = torch.zeros(
-            (gs_norms_embedding.size(0), 1, 1),
+            (gs_norms_embedding.size(0), 1),
             device=device,
         )
 
@@ -186,8 +186,8 @@ class Simulator(nn.Module):
             )
             # [batch_size, 1, hidden_dim]
             current_hidden = decoder_output[:, -1:, :]
-            predicted_gs_norm = self.gs_norm_projection(current_hidden)
-            simulated_gs_norms[:, i] = predicted_gs_norm.squeeze(1).squeeze(1)
+            predicted_gs_norm = self.gs_norm_projection(current_hidden).squeeze(1)
+            simulated_gs_norms[:, i] = predicted_gs_norm.squeeze(1)
 
             if i < basis_dim.max() - 1:
                 generated_sequence = torch.cat(
@@ -242,6 +242,7 @@ class SimulatorTrainer(nn.Module):
         hidden_dim: int = 64,
         lr: float = 1e-3,
         device: Union[torch.device, str] = "cpu",
+        teacher_forcing: bool = True,
     ) -> None:
         super().__init__()
         self.env_config = env_config
@@ -272,6 +273,8 @@ class SimulatorTrainer(nn.Module):
         state, info = self.env.reset()
         self.state = state.to(self.device)
         self.info = info.to(self.device)
+
+        self.teacher_forcing = teacher_forcing
 
     def train(self) -> dict:
         """Performs one training step by interacting with the environment and updating the model."""
@@ -350,7 +353,7 @@ class SimulatorTrainer(nn.Module):
             previous_action=prev_act,
             current_action=current_act,
             basis_dim=basis_dim,
-            target_gs_norms=target_gs,
+            target_gs_norms=current_gs if self.teacher_forcing else None,
         )
 
         gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1)
