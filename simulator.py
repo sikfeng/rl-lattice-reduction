@@ -17,13 +17,11 @@ class SimulatorConfig:
         hidden_dim: int = 128,  # TODO: must equal actor critic gs norm embedding hidden dim!
         gs_norm_weight: float = 1.0,
         time_weight: float = 1.0,
-        inverse_weight: float = 0.05,
     ) -> None:
         self.lr = lr
         self.hidden_dim = hidden_dim
         self.gs_norm_weight = gs_norm_weight
         self.time_weight = time_weight
-        self.inverse_weight = inverse_weight
 
     def __str__(self):
         self_dict = vars(self)
@@ -272,13 +270,16 @@ class Simulator(nn.Module):
         total_losses = gs_losses + time_losses
         total_loss = total_losses.mean()
 
-        metrics = [{
-            "train/gs_loss": gs_losses[i],
-            "train/time_loss": time_losses[i],
-            "train/total_loss": total_losses[i],
-            "train/predicted_time": predicted_time[i],
-            "train/target_time": target_time[i],
-        } for i in range(predicted_time.size(0))]
+        metrics = [
+            {
+                "train/gs_loss": gs_losses[i],
+                "train/time_loss": time_losses[i],
+                "train/total_loss": total_losses[i],
+                "train/predicted_time": predicted_time[i],
+                "train/target_time": target_time[i],
+            }
+            for i in range(predicted_time.size(0))
+        ]
 
         return metrics, total_loss
 
