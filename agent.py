@@ -403,6 +403,7 @@ class Agent(nn.Module):
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
                 time_sim_loss = simulator_losses["time_loss"].nanmean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss
+                simulator_loss.requires_grad_()
 
             if self.agent_config.basis_stat_predictor:
                 basis_stat_pred_losses = self.get_basis_stat_pred_loss(
@@ -415,6 +416,7 @@ class Agent(nn.Module):
                     k: v.nanmean() for k, v in basis_stat_pred_losses.items()
                 }
                 basis_stat_pred_loss = sum(basis_stat_loss.values())
+                basis_stat_pred_loss.requires_grad_()
 
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
