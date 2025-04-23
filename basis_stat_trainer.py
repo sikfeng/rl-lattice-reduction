@@ -256,7 +256,7 @@ class BasisStatPredictor(nn.Module):
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
         return simulated_gs_norms
 
-    def _compute_loss_and_update(
+    def _compute_loss(
         self,
         state: TensorDict,
         action: torch.Tensor,
@@ -347,7 +347,7 @@ class BasisStatTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, next_info = self._step_environment(action)
 
-        metrics, loss = self.basis_stat_predictor._compute_loss_and_update(
+        metrics, loss = self.basis_stat_predictor._compute_loss(
             state,
             action,
             continue_mask,
@@ -440,7 +440,7 @@ class BasisStatTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, time_taken, next_info = self._step_environment(action)
 
-        metrics = self._compute_loss_and_update(
+        metrics, loss = self.basis_stat_predictor._compute_loss(
             state, action, continue_mask, next_state, time_taken
         )
         self._update_state(next_state, next_info)
