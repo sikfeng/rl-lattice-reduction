@@ -37,6 +37,8 @@ class Simulator(nn.Module):
         action_encoder: ActionEncoder,
         dropout_p: float = 0.1,
         hidden_dim: int = 128,
+        device: Union[torch.device, str] = "cpu",
+        teacher_forcing: bool = False,
     ) -> None:
         super().__init__()
 
@@ -44,6 +46,8 @@ class Simulator(nn.Module):
         self.action_encoder = action_encoder
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
+        self.device = device
+        self.teacher_forcing = teacher_forcing
 
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.gs_norms_encoder.hidden_dim
@@ -234,6 +238,50 @@ class Simulator(nn.Module):
         simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
         return simulated_gs_norms
 
+    def _compute_loss(
+        self,
+        state: TensorDict,
+        action: torch.Tensor,
+        continue_mask: torch.Tensor,
+        next_state: TensorDict,
+        time_taken: torch.Tensor,
+    ) -> dict:
+        """Computes loss and updates model weights."""
+        if not continue_mask.any():
+            return {}, torch.tensor([0.0], device=self.device, requires_grad=True)
+
+        # Extract relevant tensors for loss calculation
+        current_gs = state["gs_norms"][continue_mask]
+        prev_act = state["last_action"][continue_mask]
+        basis_dim = state["basis_dim"][continue_mask]
+        current_act = action[continue_mask].float()
+        target_gs = next_state["gs_norms"][continue_mask]
+        target_time = time_taken[continue_mask]
+
+        # Model predictions
+        predicted_gs, predicted_time, _ = self(
+            current_gs_norms=current_gs,
+            previous_action=prev_act,
+            current_action=current_act,
+            basis_dim=basis_dim,
+            target_gs_norms=current_gs if self.teacher_forcing else None,
+        )
+
+        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1)
+        time_losses = (predicted_time - target_time) ** 2
+        total_losses = gs_losses + time_losses
+        total_loss = total_losses.mean()
+
+        metrics = [{
+            "train/gs_loss": gs_losses[i],
+            "train/time_loss": time_losses[i],
+            "train/total_loss": total_losses[i],
+            "train/predicted_time": predicted_time[i],
+            "train/target_time": target_time[i],
+        } for i in range(predicted_time.size(0))]
+
+        return metrics, total_loss
+
 
 class SimulatorTrainer(nn.Module):
     def __init__(
@@ -259,14 +307,12 @@ class SimulatorTrainer(nn.Module):
             gs_norms_encoder=self.gs_norm_encoder,
             action_encoder=self.action_encoder,
             hidden_dim=hidden_dim,
+            device=device,
+            teacher_forcing=teacher_forcing,
         )
 
-        self.sim_optimizer = optim.AdamW(
-            [
-                *self.simulator.parameters(),
-                *self.gs_norm_encoder.parameters(),
-                *self.action_encoder.parameters(),
-            ],
+        self.optimizer = optim.AdamW(
+            self.simulator.parameters(),
             lr=lr,
         )
 
@@ -283,9 +329,15 @@ class SimulatorTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, time_taken, next_info = self._step_environment(action)
 
-        metrics = self._compute_loss_and_update(
+        metrics, loss = self.simulator._compute_loss(
             state, action, continue_mask, next_state, time_taken
         )
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+        self.optimizer.step()
+
         self._update_state(next_state, next_info)
         return metrics
 
@@ -326,55 +378,6 @@ class SimulatorTrainer(nn.Module):
             next_info["time"],
             next_info,
         )
-
-    def _compute_loss_and_update(
-        self,
-        state: TensorDict,
-        action: torch.Tensor,
-        continue_mask: torch.Tensor,
-        next_state: TensorDict,
-        time_taken: torch.Tensor,
-    ) -> dict:
-        """Computes loss and updates model weights."""
-        if not continue_mask.any():
-            return {}
-
-        # Extract relevant tensors for loss calculation
-        current_gs = state["gs_norms"][continue_mask]
-        prev_act = state["last_action"][continue_mask]
-        basis_dim = state["basis_dim"][continue_mask]
-        current_act = action[continue_mask].float()
-        target_gs = next_state["gs_norms"][continue_mask]
-        target_time = time_taken[continue_mask]
-
-        # Model predictions
-        predicted_gs, predicted_time, _ = self.simulator(
-            current_gs_norms=current_gs,
-            previous_action=prev_act,
-            current_action=current_act,
-            basis_dim=basis_dim,
-            target_gs_norms=current_gs if self.teacher_forcing else None,
-        )
-
-        gs_losses = ((predicted_gs - target_gs) ** 2).mean(dim=1)
-        time_losses = (predicted_time - target_time) ** 2
-        total_losses = gs_losses + time_losses
-        total_loss = total_losses.mean()
-
-        self.sim_optimizer.zero_grad()
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-        self.sim_optimizer.step()
-
-        metrics = [{
-            "train/gs_loss": gs_losses[i],
-            "train/time_loss": time_losses[i],
-            "train/total_loss": total_losses[i],
-            "train/predicted_time": predicted_time[i],
-            "train/target_time": target_time[i],
-        } for i in range(predicted_time.size(0))]
-
-        return metrics
 
     def _update_state(self, next_state: TensorDict, next_info: dict) -> None:
         """Updates the current state and environment information."""
@@ -417,7 +420,7 @@ class SimulatorTrainer(nn.Module):
             action, continue_mask = self._generate_actions(state)
             next_state, time_taken, next_info = self._step_environment(action)
 
-        metrics = self._compute_loss_and_update(
+        metrics, loss = self.simulator._compute_loss(
             state, action, continue_mask, next_state, time_taken
         )
         self._update_state(next_state, next_info)
