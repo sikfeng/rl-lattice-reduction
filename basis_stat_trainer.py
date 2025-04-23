@@ -261,7 +261,7 @@ class BasisStatPredictor(nn.Module):
         state: TensorDict,
         action: torch.Tensor,
         continue_mask: torch.Tensor,
-        next_info: Dict[str, Any],
+        current_info: Dict[str, Any],
     ) -> dict:
         """Computes loss and updates model weights."""
         if not continue_mask.any():
@@ -272,7 +272,7 @@ class BasisStatPredictor(nn.Module):
         prev_act = state["last_action"][continue_mask]
         basis_dim = state["basis_dim"][continue_mask]
         current_act = action[continue_mask].float()
-        log_defects = next_info["log_defect"][continue_mask]
+        log_defects = current_info["log_defect"][continue_mask]
 
         # Model predictions
         preds, _ = self(
@@ -351,7 +351,7 @@ class BasisStatTrainer(nn.Module):
             state,
             action,
             continue_mask,
-            next_info,
+            self.info,
         )
 
         self.optimizer.zero_grad()
