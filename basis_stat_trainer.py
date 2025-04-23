@@ -10,6 +10,20 @@ from modules import GSNormEncoder, ActionEncoder
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
+class BasisStatPredictorConfig:
+    def __init__(
+        self,
+        lr: float = 1e-5,
+        hidden_dim: int = 128,  # TODO: must equal actor critic gs norm embedding hidden dim!
+    ) -> None:
+        self.lr = lr
+        self.hidden_dim = hidden_dim
+
+    def __str__(self):
+        self_dict = vars(self)
+        return f"SimulatorConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+
+
 class BasisStatPredictor(nn.Module):
     def __init__(
         self,

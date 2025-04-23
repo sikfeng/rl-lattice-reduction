@@ -11,6 +11,7 @@ from tqdm import tqdm
 import wandb
 
 from agent import Agent, AgentConfig, PPOConfig, SimulatorConfig
+from basis_stat_trainer import BasisStatPredictorConfig
 from reduction_env import ReductionEnvConfig
 
 
@@ -82,6 +83,18 @@ def main():
         help="Use a simulator for training.",
     )
     arch_args.add_argument(
+        "--basis-stat-predictor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use a autoencoder style basis statistic predictor for training.",
+    )
+    arch_args.add_argument(
+        "--teacher-forcing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use teacher forcing to train the simulator and the basis statistic predictor.",
+    )
+    arch_args.add_argument(
         "--net-dim",
         type=int,
         required=True,
@@ -143,11 +156,21 @@ def main():
         default=1.0,
         help="Weight for simulator time loss term (only used if --simulator is enabled).",
     )
-    simulator_args.add_argument(
-        "--simulator-inverse-weight",
+
+    basis_stats_args = parser.add_argument_group(
+        "Basis Statistics Predictor Weights (only used if --basis-stat-predictor is enabled)"
+    )
+    basis_stats_args.add_argument(
+        "--basis-stats-lr",
         type=float,
-        default=0.05,
-        help="Weight for simulator inverse loss term (only used if --simulator is enabled). The inverse norm will inherently be very noisy since there may not be a unique action that maps to the same state.",
+        default=1e-5,
+        help="Learning rate for basis statistics predictor optimizer.",
+    )
+    basis_stats_args.add_argument(
+        "--basis-stats-reward-weight",
+        type=float,
+        default=0.1,
+        help="Weight for basis statistics predictor reward term (only used if --basis-stat-predictor is enabled).",
     )
 
     ppo_args = parser.add_argument_group("PPO Training Parameters")
@@ -209,30 +232,6 @@ def main():
     else:
         args.pred_type = "discrete"
 
-    # if not args.simulator:
-    #     args.simulator_reward_weight = 0.0
-
-    # reward_weight_sum = (
-    #     abs(args.time_penalty_weight)
-    #     + abs(args.defect_reward_weight)
-    #     + abs(args.length_reward_weight)
-    #     + abs(args.simulator_reward_weight)
-    # )
-    # args.time_penalty_weight /= reward_weight_sum
-    # args.defect_reward_weight /= reward_weight_sum
-    # args.length_reward_weight /= reward_weight_sum
-    # args.simulator_reward_weight /= reward_weight_sum
-
-    # simulator_weight_sum = (
-    #     abs(args.simulator_reward_weight)
-    #     + abs(args.simulator_gs_norm_weight)
-    #     + abs(args.simulator_time_weight)
-    #     + abs(args.simulator_inverse_weight)
-    # )
-    # args.simulator_gs_norm_weight /= simulator_weight_sum
-    # args.simulator_time_weight /= simulator_weight_sum
-    # args.simulator_inverse_weight /= simulator_weight_sum
-
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -241,16 +240,17 @@ def main():
 
     start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
     checkpoint_dir = Path(
-        f"checkpoint/dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}")
+        f"checkpoint/dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
+    )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(checkpoint_dir / "training.log", mode='w'),
-            logging.StreamHandler()
-        ]
+            logging.FileHandler(checkpoint_dir / "training.log", mode="w"),
+            logging.StreamHandler(),
+        ],
     )
 
     logging.info(args)
@@ -260,12 +260,10 @@ def main():
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        logging.info(
-            f'There are {torch.cuda.device_count()} GPU(s) available.')
-        logging.info('We will use the GPU: ' +
-                     str(torch.cuda.get_device_name(0)))
+        logging.info(f"There are {torch.cuda.device_count()} GPU(s) available.")
+        logging.info("We will use the GPU: " + str(torch.cuda.get_device_name(0)))
     else:
-        logging.info('No GPU available, using the CPU instead.')
+        logging.info("No GPU available, using the CPU instead.")
         device = torch.device("cpu")
 
     run_name = f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
@@ -296,7 +294,9 @@ def main():
         lr=args.simulator_lr,
         gs_norm_weight=args.simulator_gs_norm_weight,
         time_weight=args.simulator_time_weight,
-        inverse_weight=args.simulator_inverse_weight,
+    )
+    basis_stat_predictor_config = BasisStatPredictorConfig(
+        lr=args.basis_stats_lr,
     )
     agent_config = AgentConfig(
         ppo_config=ppo_config,
@@ -304,9 +304,13 @@ def main():
         batch_size=args.batch_size,
         env_config=env_config,
         simulator=args.simulator,
+        basis_stat_predictor=args.basis_stat_predictor,
+        teacher_forcing=args.teacher_forcing,
         pred_type=args.pred_type,
         simulator_reward_weight=args.simulator_reward_weight,
+        basis_stat_predictor_reward_weight=args.basis_stats_reward_weight,
         simulator_config=simulator_config,
+        basis_stat_predictor_config=basis_stat_predictor_config,
     )
     agent = Agent(agent_config=agent_config).to(device)
 
@@ -323,7 +327,7 @@ def main():
         desc="Training episodes",
         dynamic_ncols=True,
         initial=0,
-        total=args.episodes if args.episodes >= 0 else None
+        total=args.episodes if args.episodes >= 0 else None,
     )
     while args.episodes < 0 or episode < args.episodes:
         episode_metrics = agent.collect_experiences()
