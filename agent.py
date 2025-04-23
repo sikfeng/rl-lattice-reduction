@@ -683,7 +683,7 @@ class Agent(nn.Module):
                 reward,
                 done,
                 next_state,
-                next_info["time"] - self.info["time"],
+                next_info["time"],
             )
 
             metrics = [
