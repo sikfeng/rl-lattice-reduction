@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from modules import GSNormEncoder, ActionEncoder
+from modules import GSNormDecoder, GSNormEncoder, ActionEncoder
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
 
 
@@ -43,28 +43,10 @@ class BasisStatPredictor(nn.Module):
         self.device = device
         self.teacher_forcing = teacher_forcing
 
-        self.bos_token = nn.Parameter(torch.randn(1, 1))
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=self.gs_norms_encoder.hidden_dim
+        self.gs_norms_decoder = GSNormDecoder(
+            gs_norms_encoder=self.gs_norms_encoder,
+            input_dim=self.gs_norms_encoder.hidden_dim
             + 2 * self.action_encoder.embedding_dim,
-            nhead=4,
-            dim_feedforward=4 * self.hidden_dim,
-            dropout=self.dropout_p,
-            batch_first=True,
-        )
-        self.gs_norm_decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=3,
-        )
-        self.gs_norm_projection = nn.Sequential(
-            nn.Linear(
-                self.gs_norms_encoder.hidden_dim
-                + 2 * self.action_encoder.embedding_dim,
-                self.hidden_dim,
-            ),
-            nn.LeakyReLU(),
-            nn.Dropout(p=self.dropout_p),
-            nn.Linear(self.hidden_dim, 1),
         )
         self.previous_action_predictor = nn.Sequential(
             nn.Linear(
@@ -114,8 +96,6 @@ class BasisStatPredictor(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = {}
-
-        device = current_gs_norms.device
 
         if "gs_norms_embedding" in cached_states:
             gs_norms_embedding = cached_states["gs_norms_embedding"]
@@ -167,22 +147,13 @@ class BasisStatPredictor(nn.Module):
         log_defect_pred = self.log_defect_predictor(pred_context)
         basis_dim_pred = self.basis_dim_predictor(pred_context)
 
-        if target_gs_norms is None:
-            pred_gs_norms = self._autoregressive_generation(
-                gs_norms_embedding=gs_norms_embedding,
-                prev_action_embedding=prev_action_embedding,
-                current_action_embedding=current_action_embedding,
-                basis_dim=basis_dim,
-                device=device,
-            )
-        else:
-            pred_gs_norms = self._teacher_forced_generation(
-                gs_norms_embedding=gs_norms_embedding,
-                prev_action_embedding=prev_action_embedding,
-                current_action_embedding=current_action_embedding,
-                target_gs_norms=target_gs_norms,
-                device=device,
-            )
+        pred_gs_norms = self.gs_norms_decoder(
+            gs_norms_embedding=gs_norms_embedding,
+            prev_action_embedding=prev_action_embedding,
+            current_action_embedding=current_action_embedding,
+            target_gs_norms=target_gs_norms if self.teacher_forcing else None,
+            basis_dim=basis_dim,
+        )
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
@@ -196,101 +167,6 @@ class BasisStatPredictor(nn.Module):
         }
 
         return preds, cached_states
-
-    def _autoregressive_generation(
-        self,
-        gs_norms_embedding: torch.Tensor,
-        prev_action_embedding: torch.Tensor,
-        current_action_embedding: torch.Tensor,
-        basis_dim: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        # buffers for storing generated output
-        simulated_gs_norms = torch.zeros(
-            (gs_norms_embedding.size(0), gs_norms_embedding.size(1)),
-            device=device,
-        )
-        generated_sequence = self.bos_token.expand(gs_norms_embedding.size(0), 1)
-        gs_norm_sim_context = torch.cat(
-            [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
-        )
-
-        for i in range(basis_dim.max()):
-            # embedding features for sequence generated so far
-            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
-            tgt = self.gs_norms_encoder.pos_encoding(tgt)
-            tgt = torch.cat(
-                [
-                    tgt,
-                    prev_action_embedding[:, : i + 1, :],
-                    current_action_embedding[:, : i + 1, :],
-                ],
-                dim=2,
-            )
-
-            # causal mask for autoregressive generation
-            tgt_mask = None
-            if i > 0:
-                tgt_mask = torch.triu(
-                    torch.ones(i + 1, i + 1, device=device) * float("-inf"), diagonal=1
-                )
-
-            decoder_output = self.gs_norm_decoder(
-                tgt=tgt,
-                memory=gs_norm_sim_context,
-                tgt_mask=tgt_mask,
-            )
-            # [batch_size, 1, hidden_dim]
-            current_hidden = decoder_output[:, -1:, :]
-            predicted_gs_norm = self.gs_norm_projection(current_hidden).squeeze(1)
-            simulated_gs_norms[:, i] = predicted_gs_norm.squeeze(1)
-
-            if i < basis_dim.max() - 1:
-                generated_sequence = torch.cat(
-                    [
-                        generated_sequence,
-                        predicted_gs_norm.detach(),
-                    ],
-                    dim=1,
-                )
-
-        return predicted_gs_norm
-
-    def _teacher_forced_generation(
-        self,
-        gs_norms_embedding: torch.Tensor,
-        prev_action_embedding: torch.Tensor,
-        current_action_embedding: torch.Tensor,
-        target_gs_norms: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        bos = self.bos_token.expand(target_gs_norms.size(0), 1)
-        tgt = torch.cat([bos, target_gs_norms], dim=1)
-        tgt = self.gs_norms_encoder.input_projection(tgt)
-        tgt = self.gs_norms_encoder.pos_encoding(tgt)
-        seq_len = tgt.size(1)
-        tgt = torch.cat(
-            [
-                tgt,
-                prev_action_embedding[:, :seq_len, :],
-                current_action_embedding[:, :seq_len, :],
-            ],
-            dim=2,
-        )
-        tgt_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=device) * float("-inf"), diagonal=1
-        )
-
-        gs_norm_sim_context = torch.cat(
-            [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
-        )
-
-        decoder_output = self.gs_norm_decoder(
-            tgt=tgt, memory=gs_norm_sim_context, tgt_mask=tgt_mask
-        )
-
-        simulated_gs_norms = self.gs_norm_projection(decoder_output).squeeze(-1)
-        return simulated_gs_norms
 
     def _compute_loss(
         self,
