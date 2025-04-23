@@ -267,7 +267,9 @@ class GSNormDecoder(nn.Module):
             tgt=tgt, memory=gs_norm_sim_context, tgt_mask=tgt_mask
         )
 
-        simulated_gs_norms = self.gs_norm_projection(decoder_output[:, 1:, :]).squeeze(-1)
+        simulated_gs_norms = self.gs_norm_projection(decoder_output[:, 1:, :]).squeeze(
+            -1
+        )
         return simulated_gs_norms
 
 
