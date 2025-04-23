@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=48)
+    parser.add_argument("--teacher-forcing", action="store_true", default=False)
 
     # Environment parameters
     env_group = parser.add_argument_group("Environment Settings")
@@ -127,6 +128,7 @@ def main():
         hidden_dim=args.hidden_dim,
         lr=args.lr,
         device=device,
+        teacher_forcing=args.teacher_forcing,
     ).to(device)
 
     # Initialize WandB
