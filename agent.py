@@ -6,6 +6,7 @@ import numpy as np
 from tensordict import TensorDict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
@@ -51,7 +52,9 @@ class AgentConfig:
         simulator: bool = False,
         basis_stat_predictor: bool = False,
         teacher_forcing: bool = False,
-        pred_type: str = Union[Literal["continuous"], Literal["discrete"]],
+        pred_type: str = Union[
+            Literal["continuous"], Literal["discrete"], Literal["joint-energy-based"]
+        ],
         simulator_reward_weight: float = 0.1,
         basis_stat_predictor_reward_weight: float = 0.1,
         simulator_config: Optional[SimulatorConfig] = None,
@@ -259,8 +262,45 @@ class Agent(nn.Module):
 
             elif self.agent_config.pred_type == "discrete":
                 dist = torch.distributions.Categorical(logits=logits)
-                action = dist.sample()
+
+                if self.training:
+                    action = torch.argmax(logits, dim=-1)
+                else:
+                    action = dist.sample()
+
                 log_probs = dist.log_prob(action)
+
+            elif self.agent_config.pred_type == "joint-energy-based":
+                termination_prob, continue_logits = logits
+                terminate_dist = torch.distributions.Bernoulli(termination_prob)
+
+                if self.training:
+                    terminate = terminate_dist.sample()
+                else:
+                    terminate = (termination_prob > 0.5).float()
+
+                termination_log_probs = terminate_dist.log_prob(terminate)
+
+                # here, logits are representing block_size = 2, ..., max size
+                # hence need to +1 to get action id
+                dist = torch.distributions.Categorical(logits=continue_logits)
+                if self.training:
+                    continue_action = dist.sample()
+                else:
+                    continue_action = torch.argmax(continue_logits, dim=-1)
+
+                continue_log_probs = dist.log_prob(continue_action)
+
+                action = torch.where(
+                    terminate > 0.5,
+                    torch.tensor(0, device=continue_action.device),
+                    continue_action + 1,
+                )
+                log_probs = torch.where(
+                    terminate > 0.5,
+                    termination_log_probs,  # only termination log prob matters
+                    termination_log_probs + continue_log_probs,
+                )
 
             return action, log_probs, value, logits
 
@@ -542,6 +582,8 @@ class Agent(nn.Module):
             done=dones.unsqueeze(1),
         )
 
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
         clip_fractions = []
         approx_kls = []
@@ -692,6 +734,212 @@ class Agent(nn.Module):
             )
         return metrics
 
+    def _update_joint_energy_based(self) -> Dict[str, float]:
+        self.train()
+
+        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
+
+        states = batch["state"]
+        next_states = batch["next_state"]
+        actions = batch["action"]
+        old_log_probs = batch["log_prob"]
+        rewards = batch["reward"]
+        dones = batch["done"]
+
+        with torch.no_grad():
+            _, values, _ = self.actor_critic(states)
+            _, next_values, _ = self.actor_critic(next_states)
+
+        advantages, returns = generalized_advantage_estimate(
+            gamma=self.agent_config.ppo_config.gamma,
+            lmbda=self.agent_config.ppo_config.gae_lambda,
+            state_value=values.unsqueeze(1),
+            next_state_value=next_values.unsqueeze(1),
+            reward=rewards.unsqueeze(1),
+            done=dones.unsqueeze(1),
+        )
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
+        term_losses, continue_losses = [], []
+        term_entropies, continue_entropies = [], []
+        clip_fractions = []
+        approx_kls = []
+
+        if self.agent_config.simulator:
+            gs_norm_sim_losses = []
+            time_sim_losses = []
+
+        if self.agent_config.basis_stat_predictor:
+            basis_stat_losses = defaultdict(list)
+
+        for _ in range(self.agent_config.ppo_config.epochs):
+            logits, values, cached_states = self.actor_critic(states)
+            termination_probs, continue_logits = logits
+
+            terminate_mask = actions == 0
+            continue_mask = ~terminate_mask
+
+            # Termination log probs (Bernoulli)
+            term_dist = torch.distributions.Bernoulli(probs=termination_probs)
+            term_log_probs = term_dist.log_prob(terminate_mask.float())
+
+            # Continue log probs (Categorical)
+            continue_actions = actions[continue_mask] - 1  # adjust for 0-based index
+            continue_dist = torch.distributions.Categorical(
+                logits=continue_logits[continue_mask]
+            )
+            continue_log_probs = continue_dist.log_prob(continue_actions)
+
+            # Combine log probs
+            new_log_probs = term_log_probs
+            new_log_probs[continue_mask] += continue_log_probs
+
+            ratios = (new_log_probs - old_log_probs).exp()
+
+            surr1 = ratios * advantages
+            surr2 = (
+                torch.clamp(
+                    ratios,
+                    1 - self.agent_config.ppo_config.clip_epsilon,
+                    1 + self.agent_config.ppo_config.clip_epsilon,
+                )
+                * advantages
+            )
+            actor_loss = -torch.min(surr1, surr2).mean()
+
+            critic_loss = self.mse_loss(values, returns.squeeze(1))
+
+            # Entropy
+            term_entropy = term_dist.entropy().mean()
+            continue_entropy = continue_dist.entropy().mean()
+            entropy_loss = -(term_entropy + continue_entropy)
+
+            actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
+
+            # Simulator and basis_stat_predictor losses
+            if self.agent_config.simulator:
+                simulator_losses = self.get_sim_loss(
+                    actions=actions,
+                    states=states,
+                    next_states=next_states,
+                    time_taken=batch["next_info"]["time"],
+                )
+                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
+                time_sim_loss = simulator_losses["time_loss"].nanmean()
+                simulator_loss = gs_norm_sim_loss + time_sim_loss
+                simulator_loss.requires_grad_()
+
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                    states=states,
+                    actions=actions,
+                    continue_mask=continue_mask,
+                    current_info=batch["current_info"],
+                )
+                basis_stat_loss = {
+                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
+                }
+                basis_stat_pred_loss = sum(basis_stat_loss.values())
+                basis_stat_pred_loss.requires_grad_()
+
+            # Backpropagation
+            self.optimizer.zero_grad()
+            if self.agent_config.simulator:
+                self.sim_optimizer.zero_grad()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.zero_grad()
+
+            actor_critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.actor_critic.parameters(),
+                self.agent_config.ppo_config.clip_grad_norm,
+            )
+
+            if self.agent_config.simulator:
+                simulator_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
+
+            self.optimizer.step()
+            if self.agent_config.simulator:
+                self.sim_optimizer.step()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.step()
+
+            # Logging
+            actor_losses.append(actor_loss.item())
+            critic_losses.append(critic_loss.item())
+            entropy_losses.append(entropy_loss.item())
+            total_losses.append(actor_critic_loss.item())
+
+            with torch.no_grad():
+                term_loss = (
+                    -torch.min(surr1[terminate_mask], surr2[terminate_mask]).mean()
+                    if terminate_mask.any()
+                    else torch.tensor(0.0)
+                )
+                continue_loss = (
+                    -torch.min(surr1[continue_mask], surr2[continue_mask]).mean()
+                    if continue_mask.any()
+                    else torch.tensor(0.0)
+                )
+
+            term_losses.append(term_loss.item())
+            continue_losses.append(continue_loss.item())
+            term_entropies.append(term_entropy.item())
+            continue_entropies.append(continue_entropy.item())
+
+            clipped = (ratios < 0.8) | (ratios > 1.2)
+            clip_fractions.append(clipped.float().mean().item())
+
+            approx_kl = (old_log_probs - new_log_probs).mean().item()
+            approx_kls.append(approx_kl)
+
+            if self.agent_config.simulator:
+                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
+                time_sim_losses.append(time_sim_loss.item())
+            if self.agent_config.basis_stat_predictor:
+                for k, v in basis_stat_loss.items():
+                    basis_stat_losses[k].append(v.item())
+
+        self.replay_buffer.empty()
+
+        metrics = {
+            "update/avg_actor_loss": np.mean(actor_losses),
+            "update/avg_critic_loss": np.mean(critic_losses),
+            "update/avg_term_loss": np.mean(term_losses),
+            "update/avg_continue_loss": np.mean(continue_losses),
+            "update/avg_term_entropy": np.mean(term_entropies),
+            "update/avg_continue_entropy": np.mean(continue_entropies),
+            "update/avg_entropy": np.mean(entropy_losses),
+            "update/total_loss": np.mean(total_losses),
+            "update/approx_kl": np.mean(approx_kls),
+            "update/advantages_mean": advantages.mean().item(),
+            "update/advantages_std": advantages.std().item(),
+            "update/clip_fraction": np.mean(clip_fractions),
+        }
+        if self.agent_config.simulator:
+            metrics.update(
+                {
+                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
+                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
+                }
+            )
+        if self.agent_config.basis_stat_predictor:
+            for k, v in basis_stat_losses.items():
+                metrics[f"update/basis_stat_{k}"] = np.mean(v)
+
+        return metrics
+
     def get_sim_loss(
         self,
         actions: torch.Tensor,
@@ -804,6 +1052,8 @@ class Agent(nn.Module):
             metrics = self._update_continuous()
         elif self.agent_config.pred_type == "discrete":
             metrics = self._update_discrete()
+        elif self.agent_config.pred_type == "joint-energy-based":
+            metrics = self._update_joint_energy_based()
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
@@ -871,8 +1121,9 @@ class Agent(nn.Module):
                 current_info=self.info,
             )
 
-            metrics = [
-                {
+            metrics = []
+            for i in range(reward.size(0)):
+                metric = {
                     "episode/action": float(action[i]),
                     "episode/block_size": float(
                         "nan" if action[i] == 0 else action[i] + 1
@@ -890,12 +1141,39 @@ class Agent(nn.Module):
                     "episode/total_reward": float(reward[i]),
                     "episode/action_log_prob": float(log_prob[i]),
                     "episode/value_estimate": float(value[i]),
-                    "episode/actor_terminate_logit": float(logits[i][0]),
-                    "episode/actor_block_mean_logit": float(logits[i][1]),
-                    "episode/actor_block_std_logit": float(logits[i][2]),
                 }
-                for i in range(reward.size(0))
-            ]
+
+                # Log actor logits based on prediction type
+                if self.agent_config.pred_type == "continuous":
+                    metric.update(
+                        {
+                            "episode/actor_terminate_logit": float(logits[i][0]),
+                            "episode/actor_block_mean_logit": float(logits[i][1]),
+                            "episode/actor_block_std_logit": float(logits[i][2]),
+                        }
+                    )
+                elif self.agent_config.pred_type == "discrete":
+                    logits = F.softmax(logits, dim=-1)
+                    metric["episode/actor_terminate_logit"] = float(logits[i][0])
+                    if action[i] != 0:
+                        metric["episode/actor_continue_logit"] = float(
+                            logits[i][action[i]]
+                        )
+                elif self.agent_config.pred_type == "joint-energy-based":
+                    terminate_logit = logits[0][i]
+                    continue_logits = F.softmax(logits[1][i], dim=-1)
+                    metric["episode/actor_terminate_logit"] = float(terminate_logit)
+                    if action[i] != 0:
+                        continue_action = action[i] - 1  # adjust for 0-based index
+                        metric["episode/actor_continue_logit"] = float(
+                            continue_logits[continue_action]
+                        )
+                    metric["episode/actor_max_continue_logit"] = float(
+                        continue_logits.max()
+                    )
+
+                metrics.append(metric)
+
             if self.agent_config.simulator:
                 for i in range(reward.size(0)):
                     metrics[i]["episode/simulator_reward"] = float(

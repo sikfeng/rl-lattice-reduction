@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Literal, Tuple, Union
 
 from tensordict import TensorDict
 import torch
@@ -35,13 +35,17 @@ class ContinuousPolicyHead(nn.Module):
         basis_dim: torch.Tensor,
     ) -> torch.Tensor:
         actor_output = self.actor(features)
-        absolute_size = ((previous_action + 1)
-                         + (1 - F.sigmoid(actor_output[:, 1])) * (basis_dim - previous_action))
-        actor_output = torch.stack([
-            F.sigmoid(actor_output[:, 0]),
-            absolute_size,
-            F.softplus(actor_output[:, 2]),
-        ], dim=1)
+        absolute_size = (previous_action + 1) + (1 - F.sigmoid(actor_output[:, 1])) * (
+            basis_dim - previous_action
+        )
+        actor_output = torch.stack(
+            [
+                F.sigmoid(actor_output[:, 0]),
+                absolute_size,
+                F.softplus(actor_output[:, 2]),
+            ],
+            dim=1,
+        )
 
         return actor_output
 
@@ -91,16 +95,84 @@ class DiscretePolicyHead(nn.Module):
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
         # indices == 0 is the termination action
-        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (indices == 0)  # [batch_size, action_dim]
+        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (
+            indices == 0
+        )  # [batch_size, action_dim]
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
 
         return masked_logits
 
 
+class JointEnergyBasedPolicyHead(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        action_dim: int,
+        dropout_p: float = 0.1,
+        hidden_dim: int = 128,
+        index_embedding_dim: int = 32,
+    ) -> None:
+        super().__init__()
+
+        self.feature_dim = feature_dim
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+        self.action_dim = action_dim
+        self.index_embedding_dim = index_embedding_dim
+
+        self.termination_actor = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Sigmoid(),
+            nn.Flatten(-2),
+        )
+        self.actor = nn.Sequential(
+            nn.Linear(self.feature_dim + self.index_embedding_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+        self.index_embedding = nn.Sequential(
+            nn.Unflatten(-1, (-1, 1)),
+            nn.Linear(1, self.index_embedding_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.index_embedding_dim, self.index_embedding_dim),
+        )
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        previous_action: torch.Tensor,
+        basis_dim: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        termination_logit = self.termination_actor(features)
+
+        indices = (
+            torch.arange(start=2, end=self.action_dim, device=features.device).float()
+            .unsqueeze(0)
+            .expand(features.size(0), -1)
+        )
+        index_embeddings = self.index_embedding(indices)
+        features_reshaped = features.unsqueeze(1).expand(-1, index_embeddings.size(1), -1)
+        logits = self.actor(torch.cat([features_reshaped, index_embeddings], dim=2))
+
+        previous_action_ = previous_action.unsqueeze(1).expand(logits.size(0), 1)
+        basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
+        # mask entries which are False will be masked out
+        valid_mask = (indices >= previous_action_) & (indices <= basis_dim_)
+        masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
+
+        return termination_logit, masked_logits
+
+
 class ActorCritic(nn.Module):
     def __init__(
         self,
-        policy_type: str,
+        policy_type: Union[Literal["continuous"], Literal["discrete"], Literal["joint-energy-based"]],
         max_basis_dim: int,
         dropout_p: float = 0.1,
         gs_norms_embedding_hidden_dim: int = 128,
@@ -126,11 +198,11 @@ class ActorCritic(nn.Module):
             embedding_dim=self.action_embedding_dim,
         )
 
-        self.log_std = nn.Parameter(torch.ones(1))
+        if self.policy_type == "continuous":
+            self.log_std = nn.Parameter(torch.ones(1))
 
         self.combined_feature_dim = (
-            self.gs_norms_embedding_hidden_dim
-            + self.action_embedding_dim
+            self.gs_norms_embedding_hidden_dim + self.action_embedding_dim
         )
         self.actor_hidden_dim = actor_hidden_dim
 
@@ -147,6 +219,14 @@ class ActorCritic(nn.Module):
                 dropout_p=self.dropout_p,
                 hidden_dim=self.actor_hidden_dim,
             )
+        elif self.policy_type == "joint-energy-based":
+            self.actor = JointEnergyBasedPolicyHead(
+                feature_dim=self.combined_feature_dim,
+                action_dim=self.max_basis_dim,
+                dropout_p=self.dropout_p,
+                hidden_dim=self.actor_hidden_dim,
+                index_embedding_dim=32,
+            )
         else:
             raise ValueError(
                 "self.policy_type is of unknown type: %s", self.policy_type
@@ -159,9 +239,7 @@ class ActorCritic(nn.Module):
         )
 
     def forward(
-        self,
-        tensordict: TensorDict,
-        cached_states: Dict[str, torch.Tensor] = None
+        self, tensordict: TensorDict, cached_states: Dict[str, torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         if cached_states is None:
             cached_states = dict()
@@ -182,10 +260,9 @@ class ActorCritic(nn.Module):
         else:
             prev_action_embedding = self.action_encoder(previous_action, basis_dim)
 
-        combined = torch.cat([
-            gs_norms_embedding.mean(dim=1),
-            prev_action_embedding.mean(dim=1)
-        ], dim=1)
+        combined = torch.cat(
+            [gs_norms_embedding.mean(dim=1), prev_action_embedding.mean(dim=1)], dim=1
+        )
 
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
@@ -198,7 +275,9 @@ class ActorCritic(nn.Module):
         basis_dim = tensordict["basis_dim"]  # [batch_size]
         _, max_basis_dim, _ = basis.shape
 
-        mask = torch.arange(max_basis_dim, device=basis.device) < basis_dim.view(-1, 1, 1)
+        mask = torch.arange(max_basis_dim, device=basis.device) < basis_dim.view(
+            -1, 1, 1
+        )
         masked_basis = basis * mask
 
         _, R = torch.linalg.qr(masked_basis)

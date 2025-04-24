@@ -108,6 +108,9 @@ def main():
     pred_args.add_argument(
         "--discrete", action="store_true", help="Use discrete prediction type."
     )
+    pred_args.add_argument(
+        "--joint-energy-based", action="store_true", help="Use joint energy-based prediction type."
+    )
 
     reward_args = parser.add_argument_group("Reward Weights")
     reward_args.add_argument(
@@ -229,8 +232,10 @@ def main():
     # Determine selected prediction type
     if args.continuous:
         args.pred_type = "continuous"
-    else:
+    elif args.discrete:
         args.pred_type = "discrete"
+    elif args.joint_energy_based:
+        args.pred_type = "joint-energy-based"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
