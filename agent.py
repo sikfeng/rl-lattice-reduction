@@ -505,7 +505,6 @@ class Agent(nn.Module):
             )
         return metrics
 
-    # TODO: needs fixing, update with basis stat predictor
     def _update_discrete(self) -> Dict[str, float]:
         self.train()
 
@@ -551,8 +550,16 @@ class Agent(nn.Module):
             gs_norm_sim_losses = []
             time_sim_losses = []
 
+        if self.agent_config.basis_stat_predictor:
+            basis_stat_losses = {}
+
         for _ in range(self.agent_config.ppo_config.epochs):
             logits, values, cached_states = self.actor_critic(states)
+
+            # Create action masks
+            terminate_mask = actions == 0  # [batch_size]
+            continue_mask = ~terminate_mask  # [batch_size]
+
             dist = torch.distributions.Categorical(logits=logits)
             new_log_probs = dist.log_prob(actions)
 
@@ -588,15 +595,31 @@ class Agent(nn.Module):
                     actions,
                     states,
                     next_states,
-                    batch["time_taken"],
+                    batch["next_info"]["time"],
                 )
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
                 time_sim_loss = simulator_losses["time_loss"].mean()
                 simulator_loss = gs_norm_sim_loss + time_sim_loss
+                simulator_loss.requires_grad_()
+
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                    states=states,
+                    actions=actions,
+                    continue_mask=continue_mask,
+                    current_info=batch["current_info"],
+                )
+                basis_stat_loss = {
+                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
+                }
+                basis_stat_pred_loss = sum(basis_stat_loss.values())
+                basis_stat_pred_loss.requires_grad_()
 
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
                 self.sim_optimizer.zero_grad()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.zero_grad()
 
             actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -610,10 +633,18 @@ class Agent(nn.Module):
                     [*self.actor_critic.parameters(), *self.simulator.parameters()],
                     self.agent_config.ppo_config.clip_grad_norm,
                 )
+            if self.agent_config.basis_stat_predictor:
+                basis_stat_pred_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
+                    self.agent_config.ppo_config.clip_grad_norm,
+                )
 
             self.optimizer.step()
             if self.agent_config.simulator:
                 self.sim_optimizer.step()
+            if self.agent_config.basis_stat_predictor:
+                self.basis_stat_predictor_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
@@ -624,6 +655,9 @@ class Agent(nn.Module):
             if self.agent_config.simulator:
                 gs_norm_sim_losses.append(gs_norm_sim_loss.item())
                 time_sim_losses.append(time_sim_loss.item())
+            if self.agent_config.basis_stat_predictor:
+                for k in basis_stat_loss:
+                    basis_stat_losses[k] = basis_stat_loss[k].item()
 
             clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
                 ratios > 1 + self.agent_config.ppo_config.clip_epsilon
@@ -652,6 +686,10 @@ class Agent(nn.Module):
                     "update/avg_time_sim_loss": np.mean(time_sim_losses),
                 }
             )
+        if self.agent_config.basis_stat_predictor:
+            metrics.update(
+                {f"update/{k}": np.mean(v) for k, v in basis_stat_losses.items()}
+            )
         return metrics
 
     def get_sim_loss(
@@ -664,8 +702,8 @@ class Agent(nn.Module):
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
 
-        gs_norm_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
-        time_sim_loss = torch.full_like(actions, float("nan"), device=actions.device)
+        gs_norm_sim_loss = torch.full_like(actions.float(), float("nan"), device=actions.device)
+        time_sim_loss = torch.full_like(actions.float(), float("nan"), device=actions.device)
 
         continue_mask = actions != 0
         if continue_mask.any():
@@ -704,18 +742,18 @@ class Agent(nn.Module):
         current_features = self.actor_critic.preprocess_inputs(states)
 
         losses = {
-            "gs_losses": torch.full_like(actions, float("nan"), device=actions.device),
+            "gs_losses": torch.full_like(actions.float(), float("nan"), device=actions.device),
             "prev_act_losses": torch.full_like(
-                actions, float("nan"), device=actions.device
+                actions.float(), float("nan"), device=actions.device
             ),
             "current_act_losses": torch.full_like(
-                actions, float("nan"), device=actions.device
+                actions.float(), float("nan"), device=actions.device
             ),
             "log_defect_losses": torch.full_like(
-                actions, float("nan"), device=actions.device
+                actions.float(), float("nan"), device=actions.device
             ),
             "basis_dim_losses": torch.full_like(
-                actions, float("nan"), device=actions.device
+                actions.float(), float("nan"), device=actions.device
             ),
         }
 
