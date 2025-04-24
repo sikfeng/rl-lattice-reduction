@@ -4,6 +4,7 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 import random
+from typing import Any, Dict, Tuple
 
 import fpylll
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
@@ -11,7 +12,7 @@ import numpy as np
 from tqdm import tqdm
 
 
-def svp(basis):
+def svp(basis: np.ndarray) -> np.ndarray:
     """
     Generate the shortest vector in the lattice defined by the given basis matrix using the SVP (Shortest Vector Problem) solver from fpylll library.
 
@@ -22,10 +23,10 @@ def svp(basis):
         numpy.ndarray: The shortest vector in the lattice, represented as a 1-dimensional numpy array.
     """
     basis_fpylll = IntegerMatrix.from_matrix(basis)
-    return np.array(SVP.shortest_vector(basis_fpylll, method='proved'))
+    return np.array(SVP.shortest_vector(basis_fpylll, method="proved"))
 
 
-def lll_reduction(basis):
+def lll_reduction(basis: np.ndarray) -> np.ndarray:
     """
     Apply the LLL (Lenstra-Lenstra-Lovász) reduction algorithm to a basis matrix.
 
@@ -42,7 +43,7 @@ def lll_reduction(basis):
     return np_basis
 
 
-def log_defect(basis):
+def log_defect(basis: np.ndarray) -> float:
     """
     Compute the logarithm of the orthogonality defect of a given basis matrix.
 
@@ -62,7 +63,7 @@ def log_defect(basis):
     return log_prod_norms - np.log(det)
 
 
-def gaussian_heuristic(basis: np.ndarray):
+def gaussian_heuristic(basis: np.ndarray) -> float:
     """
     Calculate the length of the shortest vector predicted by the Gaussian Heuristic
     Parameters:
@@ -83,32 +84,33 @@ def gaussian_heuristic(basis: np.ndarray):
     return math.sqrt(gh_squared)
 
 
-def generate_uniform(n, b):
+def generate_uniform(n: int, b: int) -> Tuple[np.ndarray, int]:
     basis = IntegerMatrix.random(n, "uniform", bits=b)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
-    return np_basis
+    return np_basis, -1
 
 
-def generate_qary(n, q, k):
+def generate_qary(n: int, q: int, k: int) -> Tuple[np.ndarray, int]:
     assert n % 2 == 0
 
     basis = IntegerMatrix.random(n, "qary", q=q, k=k)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
-    return np_basis
+    return np_basis, -1
 
 
-def generate_ntrulike(n, q):
+def generate_ntrulike(n: int, q: int) -> Tuple[np.ndarray, int]:
     assert n % 2 == 0
 
     basis = IntegerMatrix.random(n // 2, "ntrulike", q=q)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
-    return np_basis
+    return np_basis, -1
 
 
-def generate_knapsack(n, b):
+def generate_knapsack(n: int, b: int) -> Tuple[np.ndarray, int]:
+    # return random knapsack basis and the subset size used (will be a short basis length)
     basis = IntegerMatrix.random(n - 1, "intrel", bits=b)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
@@ -119,42 +121,30 @@ def generate_knapsack(n, b):
     for e in elements:
         np_basis[n - 1][0] += np_basis[e][0]
 
-    return np_basis
+    return np_basis, subset_size
 
 
-def func(_, n, distribution):
+def func(_, n: int, distribution: str) -> Dict[str, Any]:
     distributions = ["uniform", "qary", "ntrulike", "knapsack"]
     assert distribution in distributions, "Invalid distribution type."
 
     while True:
         try:
+            # tgt is -1 if distribution is not knapsack
             if distribution == "uniform":
-                basis = generate_uniform(n, b=6)
+                basis, tgt = generate_uniform(n, b=6)
             elif distribution == "qary":
-                basis = generate_qary(n, q=11887, k=3)
+                basis, tgt = generate_qary(n, q=11887, k=3)
             elif distribution == "ntrulike":
-                basis = generate_ntrulike(n, q=11887)
+                basis, tgt = generate_ntrulike(n, q=11887)
             elif distribution == "knapsack":
-                basis = generate_knapsack(n, b=13)
+                basis, tgt = generate_knapsack(n, b=13)
 
             # Calculate the length of the shortest basis vector in the original basis
             original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
             shortest_original_basis_vector_length = np.min(
-                original_basis_vector_lengths)
-
-            # Calculate log defect of the original basis
-            original_log_defect = log_defect(basis)
-
-            # Calculate LLL reduced basis
-            lll_reduced_basis = lll_reduction(basis)
-
-            # Calculate log defect of the LLL reduced basis
-            defect = log_defect(lll_reduced_basis)
-
-            # Calculate length of the shortest basis vector in the LLL reduced basis
-            lll_basis_vector_lengths = np.linalg.norm(
-                lll_reduced_basis, axis=1)
-            shortest_lll_basis_vector_length = np.min(lll_basis_vector_lengths)
+                original_basis_vector_lengths
+            )
 
             # Calculate Gaussian heuristic
             gh = gaussian_heuristic(basis)
@@ -163,10 +153,8 @@ def func(_, n, distribution):
             return {
                 "basis": basis,
                 "shortest_original_basis_vector_length": shortest_original_basis_vector_length,
-                "original_log_defect": original_log_defect,
-                "lll_log_defect": defect,
-                "shortest_lll_basis_vector_length": shortest_lll_basis_vector_length,
                 "gaussian_heuristic": gh,
+                "target_length": tgt,
             }
         except (ReductionError, ValueError, RuntimeError) as e:
             continue
@@ -189,11 +177,14 @@ def main():
     worker = partial(func, n=args.dim, distribution=args.distribution)
     np.random.seed(args.seed)
     with mp.Pool(args.processes) as pool:
-        data = list(tqdm(
-            pool.imap(worker,range(args.samples)),
-            desc=f"Generating dim {args.dim}, {args.distribution} distribution",
-            dynamic_ncols=True,
-            total=args.samples))
+        data = list(
+            tqdm(
+                pool.imap(worker, range(args.samples)),
+                desc=f"Generating dim {args.dim}, {args.distribution} distribution",
+                dynamic_ncols=True,
+                total=args.samples,
+            )
+        )
 
     filename = f"random_bases/dim_{args.dim}_type_{args.distribution}.npy"
     np.save(filename, data)
