@@ -702,8 +702,12 @@ class Agent(nn.Module):
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
 
-        gs_norm_sim_loss = torch.full_like(actions.float(), float("nan"), device=actions.device)
-        time_sim_loss = torch.full_like(actions.float(), float("nan"), device=actions.device)
+        gs_norm_sim_loss = torch.full_like(
+            actions.float(), float("nan"), device=actions.device
+        )
+        time_sim_loss = torch.full_like(
+            actions.float(), float("nan"), device=actions.device
+        )
 
         continue_mask = actions != 0
         if continue_mask.any():
@@ -742,7 +746,9 @@ class Agent(nn.Module):
         current_features = self.actor_critic.preprocess_inputs(states)
 
         losses = {
-            "gs_losses": torch.full_like(actions.float(), float("nan"), device=actions.device),
+            "gs_losses": torch.full_like(
+                actions.float(), float("nan"), device=actions.device
+            ),
             "prev_act_losses": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
@@ -967,10 +973,16 @@ class Agent(nn.Module):
             "steps": steps,
             "smallest_defect": min(log_defect_history),
             "shortest_length": min(shortest_length_history),
-            "success": float(min(shortest_length_history) < 1.05),
+            "tgt_length": float(batch["target_length"]),
+            "success": float(
+                min(shortest_length_history) < float(batch["target_length"]) + 1e-6
+            ),
             "time": sum(time_history),
             "length_improvement": shortest_length_history[0]
+            - shortest_length_history[-1],
+            "best_length_improvement": shortest_length_history[0]
             - min(shortest_length_history),
+            "gh": float(batch["gaussian_heuristic"]),
         }
         metrics.update(episode_rewards)
 

@@ -110,7 +110,8 @@ def generate_ntrulike(n: int, q: int) -> Tuple[np.ndarray, int]:
 
 
 def generate_knapsack(n: int, b: int) -> Tuple[np.ndarray, int]:
-    # return random knapsack basis and the subset size used (will be a short basis length)
+    # return random knapsack basis and the shortest basis length
+    # (assuming that it is the basis representing the subset sum for the last row)
     basis = IntegerMatrix.random(n - 1, "intrel", bits=b)
     np_basis = np.zeros((n, n), dtype=int)
     basis.to_matrix(np_basis)
@@ -121,7 +122,7 @@ def generate_knapsack(n: int, b: int) -> Tuple[np.ndarray, int]:
     for e in elements:
         np_basis[n - 1][0] += np_basis[e][0]
 
-    return np_basis, subset_size
+    return np_basis, np.sqrt(subset_size)
 
 
 def func(_, n: int, distribution: str) -> Dict[str, Any]:
@@ -154,7 +155,7 @@ def func(_, n: int, distribution: str) -> Dict[str, Any]:
                 "basis": basis,
                 "shortest_original_basis_vector_length": shortest_original_basis_vector_length,
                 "gaussian_heuristic": gh,
-                "target_length": tgt,
+                "target_length": tgt / gh if tgt != -1 else -1,
             }
         except (ReductionError, ValueError, RuntimeError) as e:
             continue

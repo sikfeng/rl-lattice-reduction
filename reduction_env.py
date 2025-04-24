@@ -303,6 +303,8 @@ class ReductionEnvironment:
             "shortest_length": self.shortest_length_history[-1],
             # "time": sum(self.time_history),
             "time": self.enum_history[-1],  # temp hack
+            "gh": self.gh,
+            "tgt_length": self.tgt_length,
         }
 
     def reset(
@@ -321,8 +323,8 @@ class ReductionEnvironment:
             options["basis"] = torch.tensor(options["basis"])
 
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
-        self.lll_log_defect = options["lll_log_defect"]
         self.gh = self.gaussian_heuristic(self.basis)
+        self.tgt_length = options["target_length"]
 
         self.tracer = normalize_tracer(True)
         if not isinstance(self.tracer, Tracer):
@@ -368,11 +370,12 @@ class ReductionEnvironment:
         if action != 0:
             start_time = process_time()
             block_size = self._action_to_block(action)
-            self.clean = self.bkz.tour(BKZ.EasyParam(
-                block_size=block_size,
-                max_loops=1,
-                gh_factor=1.1,
-                auto_abort=True), tracer=self.tracer)
+            self.clean = self.bkz.tour(
+                BKZ.EasyParam(
+                    block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True
+                ),
+                tracer=self.tracer,
+            )
             time_taken = process_time() - start_time
 
         self._update_history(action=int(action), time_taken=time_taken)
@@ -563,16 +566,25 @@ class VectorizedReductionEnvironment:
         for d in rewards:
             for key, value in d.items():
                 rewards_[key].append(value)
-        rewards_ = {key: torch.tensor(value, device=actions.device) for key, value in rewards_.items()}
+        rewards_ = {
+            key: torch.tensor(value, device=actions.device)
+            for key, value in rewards_.items()
+        }
 
-        terminateds_ = torch.tensor(terminateds, dtype=torch.bool, device=actions.device)
+        terminateds_ = torch.tensor(
+            terminateds, dtype=torch.bool, device=actions.device
+        )
         truncateds_ = torch.tensor(truncateds, dtype=torch.bool, device=actions.device)
         infos_ = {}
         for key in infos[0]:
             if isinstance(infos[0][key], torch.Tensor):
-                infos_[key] = torch.stack([info[key] for info in infos]).to(actions.device)
+                infos_[key] = torch.stack([info[key] for info in infos]).to(
+                    actions.device
+                )
             else:
-                infos_[key] = torch.tensor([info[key] for info in infos], device=actions.device)
+                infos_[key] = torch.tensor(
+                    [info[key] for info in infos], device=actions.device
+                )
 
         return next_states_, rewards_, terminateds_, truncateds_, infos_
 
