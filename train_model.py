@@ -138,7 +138,7 @@ def main():
     simulator_args.add_argument(
         "--simulator-lr",
         type=float,
-        default=1e-5,
+        default=1e-6,
         help="Learning rate for simulator optimizer.",
     )
     simulator_args.add_argument(
@@ -166,7 +166,7 @@ def main():
     basis_stats_args.add_argument(
         "--basis-stats-lr",
         type=float,
-        default=1e-5,
+        default=1e-6,
         help="Learning rate for basis statistics predictor optimizer.",
     )
     basis_stats_args.add_argument(
