@@ -172,7 +172,7 @@ class JointEnergyBasedPolicyHead(nn.Module):
 class ActorCritic(nn.Module):
     def __init__(
         self,
-        policy_type: Union[Literal["continuous"], Literal["discrete"], Literal["joint-energy-based"]],
+        policy_type: Union[Literal["continuous"], Literal["discrete"], Literal["joint-energy"]],
         max_basis_dim: int,
         dropout_p: float = 0.1,
         gs_norms_embedding_hidden_dim: int = 128,
@@ -198,9 +198,6 @@ class ActorCritic(nn.Module):
             embedding_dim=self.action_embedding_dim,
         )
 
-        if self.policy_type == "continuous":
-            self.log_std = nn.Parameter(torch.ones(1))
-
         self.combined_feature_dim = (
             self.gs_norms_embedding_hidden_dim + self.action_embedding_dim
         )
@@ -219,7 +216,7 @@ class ActorCritic(nn.Module):
                 dropout_p=self.dropout_p,
                 hidden_dim=self.actor_hidden_dim,
             )
-        elif self.policy_type == "joint-energy-based":
+        elif self.policy_type == "joint-energy":
             self.actor = JointEnergyBasedPolicyHead(
                 feature_dim=self.combined_feature_dim,
                 action_dim=self.max_basis_dim,

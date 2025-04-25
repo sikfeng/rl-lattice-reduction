@@ -52,8 +52,8 @@ class AgentConfig:
         simulator: bool = False,
         basis_stat_predictor: bool = False,
         teacher_forcing: bool = False,
-        pred_type: str = Union[
-            Literal["continuous"], Literal["discrete"], Literal["joint-energy-based"]
+        policy_type: str = Union[
+            Literal["continuous"], Literal["discrete"], Literal["joint-energ"]
         ],
         simulator_reward_weight: float = 0.1,
         basis_stat_predictor_reward_weight: float = 0.1,
@@ -69,7 +69,7 @@ class AgentConfig:
         self.basis_stat_predictor = basis_stat_predictor
         self.teacher_forcing = teacher_forcing
 
-        self.pred_type = pred_type
+        self.policy_type = policy_type
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
         self.simulator_reward_weight = 0.0 if not simulator else simulator_reward_weight
         self.basis_stat_predictor_reward_weight = (
@@ -102,7 +102,7 @@ class Agent(nn.Module):
         self.device = self.agent_config.device
 
         self.actor_critic = ActorCritic(
-            policy_type=self.agent_config.pred_type,
+            policy_type=self.agent_config.policy_type,
             max_basis_dim=self.agent_config.env_config.net_dim,
             dropout_p=self.agent_config.dropout_p,
         )
@@ -203,7 +203,7 @@ class Agent(nn.Module):
             last_action = state["last_action"]
             logits, value, _ = self.actor_critic(state)
 
-            if self.agent_config.pred_type == "continuous":
+            if self.agent_config.policy_type == "continuous":
                 termination_prob, block_size_float, block_size_std = logits.unbind(
                     dim=1
                 )
@@ -260,7 +260,7 @@ class Agent(nn.Module):
                     block_size - 1,
                 )  # consolidate action ids
 
-            elif self.agent_config.pred_type == "discrete":
+            elif self.agent_config.policy_type == "discrete":
                 dist = torch.distributions.Categorical(logits=logits)
 
                 if self.training:
@@ -270,7 +270,7 @@ class Agent(nn.Module):
 
                 log_probs = dist.log_prob(action)
 
-            elif self.agent_config.pred_type == "joint-energy-based":
+            elif self.agent_config.policy_type == "joint-energy":
                 termination_prob, continue_logits = logits
                 terminate_dist = torch.distributions.Bernoulli(termination_prob)
 
@@ -734,7 +734,7 @@ class Agent(nn.Module):
             )
         return metrics
 
-    def _update_joint_energy_based(self) -> Dict[str, float]:
+    def _update_joint_energy(self) -> Dict[str, float]:
         self.train()
 
         batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
@@ -1048,12 +1048,12 @@ class Agent(nn.Module):
         if len(self.replay_buffer) < self.agent_config.ppo_config.minibatch_size:
             return {}
 
-        if self.agent_config.pred_type == "continuous":
+        if self.agent_config.policy_type == "continuous":
             metrics = self._update_continuous()
-        elif self.agent_config.pred_type == "discrete":
+        elif self.agent_config.policy_type == "discrete":
             metrics = self._update_discrete()
-        elif self.agent_config.pred_type == "joint-energy-based":
-            metrics = self._update_joint_energy_based()
+        elif self.agent_config.policy_type == "joint-energy":
+            metrics = self._update_joint_energy()
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
@@ -1144,7 +1144,7 @@ class Agent(nn.Module):
                 }
 
                 # Log actor logits based on prediction type
-                if self.agent_config.pred_type == "continuous":
+                if self.agent_config.policy_type == "continuous":
                     metric.update(
                         {
                             "episode/actor_terminate_logit": float(logits[i][0]),
@@ -1152,14 +1152,14 @@ class Agent(nn.Module):
                             "episode/actor_block_std_logit": float(logits[i][2]),
                         }
                     )
-                elif self.agent_config.pred_type == "discrete":
+                elif self.agent_config.policy_type == "discrete":
                     logits = F.softmax(logits, dim=-1)
                     metric["episode/actor_terminate_logit"] = float(logits[i][0])
                     if action[i] != 0:
                         metric["episode/actor_continue_logit"] = float(
                             logits[i][action[i]]
                         )
-                elif self.agent_config.pred_type == "joint-energy-based":
+                elif self.agent_config.policy_type == "joint-energy":
                     terminate_logit = logits[0][i]
                     continue_logits = F.softmax(logits[1][i], dim=-1)
                     metric["episode/actor_terminate_logit"] = float(terminate_logit)

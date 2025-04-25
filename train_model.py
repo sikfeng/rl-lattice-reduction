@@ -101,15 +101,15 @@ def main():
         help="Maximum input dimension for neural network architecture.",
     )
 
-    pred_args = arch_args.add_mutually_exclusive_group(required=True)
-    pred_args.add_argument(
-        "--continuous", action="store_true", help="Use continuous prediction type."
+    policy_args = arch_args.add_mutually_exclusive_group(required=True)
+    policy_args.add_argument(
+        "--continuous", action="store_true", help="Use continuous prediction policy."
     )
-    pred_args.add_argument(
-        "--discrete", action="store_true", help="Use discrete prediction type."
+    policy_args.add_argument(
+        "--discrete", action="store_true", help="Use discrete prediction policy."
     )
-    pred_args.add_argument(
-        "--joint-energy-based", action="store_true", help="Use joint energy-based prediction type."
+    policy_args.add_argument(
+        "--joint-energy", action="store_true", help="Use joint energy-based prediction policy."
     )
 
     reward_args = parser.add_argument_group("Reward Weights")
@@ -231,11 +231,11 @@ def main():
 
     # Determine selected prediction type
     if args.continuous:
-        args.pred_type = "continuous"
+        args.policy_type = "continuous"
     elif args.discrete:
-        args.pred_type = "discrete"
-    elif args.joint_energy_based:
-        args.pred_type = "joint-energy-based"
+        args.policy_type = "discrete"
+    elif args.joint_energy:
+        args.policy_type = "joint-energy"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -311,7 +311,7 @@ def main():
         simulator=args.simulator,
         basis_stat_predictor=args.basis_stat_predictor,
         teacher_forcing=args.teacher_forcing,
-        pred_type=args.pred_type,
+        policy_type=args.policy_type,
         simulator_reward_weight=args.simulator_reward_weight,
         basis_stat_predictor_reward_weight=args.basis_stats_reward_weight,
         simulator_config=simulator_config,
