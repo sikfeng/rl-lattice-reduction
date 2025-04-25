@@ -270,7 +270,7 @@ class ReductionEnvConfig:
 
     def __post_init__(self):
         if self.max_steps is None:
-            self.max_steps = 2 * self.net_dim
+            self.max_steps = self.net_dim
 
     def __str__(self):
         self_dict = vars(self)
