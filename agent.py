@@ -201,12 +201,10 @@ class Agent(nn.Module):
         with torch.no_grad():
             basis_dim = state["basis_dim"]
             last_action = state["last_action"]
-            logits, value, _ = self.actor_critic(state)
+            termination_prob, continue_logits, value, _ = self.actor_critic(state)
 
             if self.agent_config.policy_type == "continuous":
-                termination_prob, block_size_float, block_size_std = logits.unbind(
-                    dim=1
-                )
+                block_size_float, block_size_std = continue_logits.unbind(dim=1)
                 if self.training:
                     terminate_dist = torch.distributions.Bernoulli(termination_prob)
                     terminate = terminate_dist.sample()
@@ -260,49 +258,34 @@ class Agent(nn.Module):
                     block_size - 1,
                 )  # consolidate action ids
 
-            elif self.agent_config.policy_type == "discrete":
-                dist = torch.distributions.Categorical(logits=logits)
-
-                if self.training:
-                    action = torch.argmax(logits, dim=-1)
-                else:
-                    action = dist.sample()
-
-                log_probs = dist.log_prob(action)
-
-            elif self.agent_config.policy_type == "joint-energy":
-                termination_prob, continue_logits = logits
+            elif (
+                self.agent_config.policy_type == "discrete"
+                or self.agent_config.policy_type == "joint-energy"
+            ):
                 terminate_dist = torch.distributions.Bernoulli(termination_prob)
-
+                continue_dist = torch.distributions.Categorical(logits=continue_logits)
                 if self.training:
                     terminate = terminate_dist.sample()
+                    continue_action = continue_dist.sample()
                 else:
                     terminate = (termination_prob > 0.5).float()
-
-                termination_log_probs = terminate_dist.log_prob(terminate)
-
-                # here, logits are representing block_size = 2, ..., max size
-                # hence need to +1 to get action id
-                dist = torch.distributions.Categorical(logits=continue_logits)
-                if self.training:
-                    continue_action = dist.sample()
-                else:
                     continue_action = torch.argmax(continue_logits, dim=-1)
 
-                continue_log_probs = dist.log_prob(continue_action)
+                termination_log_probs = terminate_dist.log_prob(terminate)
+                continue_log_probs = continue_dist.log_prob(continue_action)
 
                 action = torch.where(
-                    terminate > 0.5,
+                    termination_prob > 0.5,
                     torch.tensor(0, device=continue_action.device),
                     continue_action + 1,
                 )
                 log_probs = torch.where(
-                    terminate > 0.5,
+                    termination_prob > 0.5,
                     termination_log_probs,  # only termination log prob matters
                     termination_log_probs + continue_log_probs,
                 )
 
-            return action, log_probs, value, logits
+            return action, log_probs, value, termination_prob, continue_logits
 
     def _update_continuous(self) -> Dict[str, float]:
         self.train()
@@ -329,8 +312,8 @@ class Agent(nn.Module):
             The computed `values` and `next_values` are used to calculate the temporal-difference
             errors (deltas), which are the building blocks for GAE.
             """
-            _, values, _ = self.actor_critic(states)
-            _, next_values, _ = self.actor_critic(next_states)
+            _, _, values, _ = self.actor_critic(states)
+            _, _, next_values, _ = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.agent_config.ppo_config.gamma,
@@ -353,22 +336,24 @@ class Agent(nn.Module):
             time_sim_losses = []
 
         if self.agent_config.basis_stat_predictor:
-            basis_stat_losses = {}
+            basis_stat_losses = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            logits, values, cached_states = self.actor_critic(states)
-            term_probs, block_mean_preds, block_pred_std = logits.unbind(dim=1)
+            termination_probs, block_logits, values, cached_states = self.actor_critic(
+                states
+            )
+            block_mean_preds, block_pred_std = block_logits.unbind(dim=1)
             # term_probs, block_preds, values [batch_size]
 
             # Create action masks
             terminate_mask = actions == 0  # [batch_size]
             continue_mask = ~terminate_mask  # [batch_size]
 
-            # Calculate termination log probs (Bernoulli distribution)
-            term_dist = torch.distributions.Bernoulli(probs=term_probs)
+            # Termination log probs (Bernoulli)
+            term_dist = torch.distributions.Bernoulli(probs=termination_probs)
             term_log_probs = term_dist.log_prob(terminate_mask.float())  # [batch_size]
 
-            # Calculate block size log probs (Normal distribution)
+            # Block size log probs (Normal distribution)
             block_dist = torch.distributions.Normal(
                 loc=block_mean_preds[continue_mask],
                 scale=block_pred_std[continue_mask],
@@ -377,11 +362,9 @@ class Agent(nn.Module):
                 actions[continue_mask].float()
             )  # [continue_size]
 
-            # Combine log probabilities
+            # Combine log probs
             new_log_probs = term_log_probs
-            new_log_probs[continue_mask] = (
-                new_log_probs[continue_mask] + block_log_probs
-            )
+            new_log_probs[continue_mask] += block_log_probs
 
             r"""
             The probability ratio is
@@ -417,28 +400,14 @@ class Agent(nn.Module):
             # additivity property holds because termination and block size are independent
             entropy_loss = -(term_entropy + block_entropy)
 
-            with torch.no_grad():
-                term_loss = (
-                    -torch.min(surr1[terminate_mask], surr2[terminate_mask]).mean()
-                    if terminate_mask.any()
-                    else torch.tensor(0.0)
-                )
-
-                # Block size component loss
-                block_loss = (
-                    -torch.min(surr1[continue_mask], surr2[continue_mask]).mean()
-                    if continue_mask.any()
-                    else torch.tensor(0.0)
-                )
-
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
 
             if self.agent_config.simulator:
                 simulator_losses = self.get_sim_loss(
-                    actions,
-                    states,
-                    next_states,
-                    batch["next_info"]["time"],
+                    actions=actions,
+                    states=states,
+                    next_states=next_states,
+                    time_taken=batch["next_info"]["time"],
                 )
                 gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
                 time_sim_loss = simulator_losses["time_loss"].nanmean()
@@ -495,18 +464,25 @@ class Agent(nn.Module):
             entropy_losses.append(entropy_loss.item())
             total_losses.append(actor_critic_loss.item())
 
+            with torch.no_grad():
+                term_loss = (
+                    -torch.min(surr1[terminate_mask], surr2[terminate_mask]).mean()
+                    if terminate_mask.any()
+                    else torch.tensor(0.0)
+                )
+
+                # Block size component loss
+                block_loss = (
+                    -torch.min(surr1[continue_mask], surr2[continue_mask]).mean()
+                    if continue_mask.any()
+                    else torch.tensor(0.0)
+                )
+
             term_losses.append(term_loss.item())
             block_losses.append(block_loss.item())
 
             term_entropies.append(term_entropy.item())
             block_entropies.append(block_entropy.item())
-
-            if self.agent_config.simulator:
-                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
-                time_sim_losses.append(time_sim_loss.item())
-            if self.agent_config.basis_stat_predictor:
-                for k in basis_stat_loss:
-                    basis_stat_losses[k] = basis_stat_loss[k].item()
 
             clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
                 ratios > 1 + self.agent_config.ppo_config.clip_epsilon
@@ -515,6 +491,13 @@ class Agent(nn.Module):
 
             approx_kl = (old_log_probs - new_log_probs).mean().item()
             approx_kls.append(approx_kl)
+
+            if self.agent_config.simulator:
+                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
+                time_sim_losses.append(time_sim_loss.item())
+            if self.agent_config.basis_stat_predictor:
+                for k, v in basis_stat_loss.items():
+                    basis_stat_losses[k].append(v.item())
 
         self.replay_buffer.empty()
 
@@ -527,7 +510,7 @@ class Agent(nn.Module):
             "update/avg_block_entropy": np.mean(block_entropies),
             "update/avg_entropy": np.mean(entropy_losses),
             "update/total_loss": np.mean(total_losses),
-            "update/approx_kl": np.mean(approx_kl),
+            "update/approx_kl": np.mean(approx_kls),
             "update/advantages_mean": advantages.mean().item(),
             "update/advantages_std": advantages.std().item(),
             "update/clip_fraction": np.mean(clip_fractions),
@@ -540,9 +523,8 @@ class Agent(nn.Module):
                 }
             )
         if self.agent_config.basis_stat_predictor:
-            metrics.update(
-                {f"update/{k}": np.mean(v) for k, v in basis_stat_losses.items()}
-            )
+            for k, v in basis_stat_losses.items():
+                metrics[f"update/basis_stat_{k}"] = np.mean(v)
         return metrics
 
     def _update_discrete(self) -> Dict[str, float]:
@@ -557,198 +539,9 @@ class Agent(nn.Module):
         rewards = batch["reward"]
         dones = batch["done"]
 
-        # Calculate advantages by Generalized Advantage Estimation (GAE) using current value function
         with torch.no_grad():
-            """
-            This block computes the value estimates for the current states and the next states
-            using the critic part of the actor-critic model.
-
-            Using `torch.no_grad()` means we do not track gradients during this computation because
-            these estimates serve as targets for calculating the advantage; they are not directly
-            updated in this backward pass.
-
-            The computed `values` and `next_values` are used to calculate the temporal-difference
-            errors (deltas), which are the building blocks for GAE.
-            """
-            _, values, _ = self.actor_critic(states)
-            _, next_values, _ = self.actor_critic(next_states)
-
-        advantages, returns = generalized_advantage_estimate(
-            gamma=self.agent_config.ppo_config.gamma,
-            lmbda=self.agent_config.ppo_config.gae_lambda,
-            state_value=values.unsqueeze(1),
-            next_state_value=next_values.unsqueeze(1),
-            reward=rewards.unsqueeze(1),
-            done=dones.unsqueeze(1),
-        )
-
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-        actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
-        clip_fractions = []
-        approx_kls = []
-
-        if self.agent_config.simulator:
-            gs_norm_sim_losses = []
-            time_sim_losses = []
-
-        if self.agent_config.basis_stat_predictor:
-            basis_stat_losses = {}
-
-        for _ in range(self.agent_config.ppo_config.epochs):
-            logits, values, cached_states = self.actor_critic(states)
-
-            # Create action masks
-            terminate_mask = actions == 0  # [batch_size]
-            continue_mask = ~terminate_mask  # [batch_size]
-
-            dist = torch.distributions.Categorical(logits=logits)
-            new_log_probs = dist.log_prob(actions)
-
-            r"""
-            The probability ratio is
-            \[ r_t(\theta) = \frac{\pi_{\theta}(a_t | s_t)}{\pi_{\theta_{\text{old}}}(a_t | s_t)} \]
-            This ratio measures how much the new policy differs from the old one.
-            """
-            ratios = (new_log_probs - old_log_probs).exp()
-
-            r"""
-            PPO modifies the standard policy gradient update using a clipped surrogate objective:
-            \[ L(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) A_t, \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right) \right] \]
-            """
-            surr1 = ratios * advantages
-            surr2 = (
-                torch.clamp(
-                    ratios,
-                    1 - self.agent_config.ppo_config.clip_epsilon,
-                    1 + self.agent_config.ppo_config.clip_epsilon,
-                )
-                * advantages
-            )
-            actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = self.mse_loss(values, returns.squeeze(1))
-            entropy_loss = -dist.entropy().mean()
-
-            loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-
-            actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-            if self.agent_config.simulator:
-                simulator_losses = self.get_sim_loss(
-                    actions,
-                    states,
-                    next_states,
-                    batch["next_info"]["time"],
-                )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].mean()
-                time_sim_loss = simulator_losses["time_loss"].mean()
-                simulator_loss = gs_norm_sim_loss + time_sim_loss
-                simulator_loss.requires_grad_()
-
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
-                    states=states,
-                    actions=actions,
-                    continue_mask=continue_mask,
-                    current_info=batch["current_info"],
-                )
-                basis_stat_loss = {
-                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
-                }
-                basis_stat_pred_loss = sum(basis_stat_loss.values())
-                basis_stat_pred_loss.requires_grad_()
-
-            self.optimizer.zero_grad()
-            if self.agent_config.simulator:
-                self.sim_optimizer.zero_grad()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.zero_grad()
-
-            actor_critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.actor_critic.parameters(),
-                self.agent_config.ppo_config.clip_grad_norm,
-            )
-
-            if self.agent_config.simulator:
-                simulator_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    [*self.actor_critic.parameters(), *self.simulator.parameters()],
-                    self.agent_config.ppo_config.clip_grad_norm,
-                )
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(),
-                    self.agent_config.ppo_config.clip_grad_norm,
-                )
-
-            self.optimizer.step()
-            if self.agent_config.simulator:
-                self.sim_optimizer.step()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.step()
-
-            # Logging metrics
-            actor_losses.append(actor_loss.item())
-            critic_losses.append(critic_loss.item())
-            entropy_losses.append(entropy_loss.item())
-            total_losses.append(loss.item())
-
-            if self.agent_config.simulator:
-                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
-                time_sim_losses.append(time_sim_loss.item())
-            if self.agent_config.basis_stat_predictor:
-                for k in basis_stat_loss:
-                    basis_stat_losses[k] = basis_stat_loss[k].item()
-
-            clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
-                ratios > 1 + self.agent_config.ppo_config.clip_epsilon
-            )
-            clip_fractions.append(clipped.float().mean().item())
-
-            approx_kl = (old_log_probs - new_log_probs).mean().item()
-            approx_kls.append(approx_kl)
-
-        self.replay_buffer.empty()
-
-        metrics = {
-            "update/avg_actor_loss": np.mean(actor_losses),
-            "update/avg_critic_loss": np.mean(critic_losses),
-            "update/avg_entropy": np.mean(entropy_losses),
-            "update/total_loss": np.mean(total_losses),
-            "update/approx_kl": np.mean(approx_kl),
-            "update/advantages_mean": advantages.mean().item(),
-            "update/advantages_std": advantages.std().item(),
-            "update/clip_fraction": np.mean(clip_fractions),
-        }
-        if self.agent_config.simulator:
-            metrics.update(
-                {
-                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
-                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
-                }
-            )
-        if self.agent_config.basis_stat_predictor:
-            metrics.update(
-                {f"update/{k}": np.mean(v) for k, v in basis_stat_losses.items()}
-            )
-        return metrics
-
-    def _update_joint_energy(self) -> Dict[str, float]:
-        self.train()
-
-        batch = self.replay_buffer.sample(len(self.replay_buffer)).to(self.device)
-
-        states = batch["state"]
-        next_states = batch["next_state"]
-        actions = batch["action"]
-        old_log_probs = batch["log_prob"]
-        rewards = batch["reward"]
-        dones = batch["done"]
-
-        with torch.no_grad():
-            _, values, _ = self.actor_critic(states)
-            _, next_values, _ = self.actor_critic(next_states)
+            _, _, values, _ = self.actor_critic(states)
+            _, _, next_values, _ = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.agent_config.ppo_config.gamma,
@@ -774,11 +567,13 @@ class Agent(nn.Module):
             basis_stat_losses = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            logits, values, cached_states = self.actor_critic(states)
-            termination_probs, continue_logits = logits
+            termination_probs, continue_logits, values, cached_states = (
+                self.actor_critic(states)
+            )
 
-            terminate_mask = actions == 0
-            continue_mask = ~terminate_mask
+            # Create action masks
+            terminate_mask = actions == 0  # [batch_size]
+            continue_mask = ~terminate_mask  # [batch_size]
 
             # Termination log probs (Bernoulli)
             term_dist = torch.distributions.Bernoulli(probs=termination_probs)
@@ -807,17 +602,17 @@ class Agent(nn.Module):
                 * advantages
             )
             actor_loss = -torch.min(surr1, surr2).mean()
-
             critic_loss = self.mse_loss(values, returns.squeeze(1))
 
-            # Entropy
             term_entropy = term_dist.entropy().mean()
-            continue_entropy = continue_dist.entropy().mean()
+
+            continue_entropy_all = torch.zeros(actions.size(0), device=self.device)
+            continue_entropy_all[continue_mask] = continue_dist.entropy()
+            continue_entropy = continue_entropy_all.mean()
+            # additivity property holds because termination and continue action are independent
             entropy_loss = -(term_entropy + continue_entropy)
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-
-            # Simulator and basis_stat_predictor losses
             if self.agent_config.simulator:
                 simulator_losses = self.get_sim_loss(
                     actions=actions,
@@ -843,7 +638,6 @@ class Agent(nn.Module):
                 basis_stat_pred_loss = sum(basis_stat_loss.values())
                 basis_stat_pred_loss.requires_grad_()
 
-            # Backpropagation
             self.optimizer.zero_grad()
             if self.agent_config.simulator:
                 self.sim_optimizer.zero_grad()
@@ -875,7 +669,7 @@ class Agent(nn.Module):
             if self.agent_config.basis_stat_predictor:
                 self.basis_stat_predictor_optimizer.step()
 
-            # Logging
+            # Logging metrics
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
             entropy_losses.append(entropy_loss.item())
@@ -898,7 +692,9 @@ class Agent(nn.Module):
             term_entropies.append(term_entropy.item())
             continue_entropies.append(continue_entropy.item())
 
-            clipped = (ratios < 0.8) | (ratios > 1.2)
+            clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
+                ratios > 1 + self.agent_config.ppo_config.clip_epsilon
+            )
             clip_fractions.append(clipped.float().mean().item())
 
             approx_kl = (old_log_probs - new_log_probs).mean().item()
@@ -1050,15 +846,19 @@ class Agent(nn.Module):
 
         if self.agent_config.policy_type == "continuous":
             metrics = self._update_continuous()
-        elif self.agent_config.policy_type == "discrete":
+        elif (
+            self.agent_config.policy_type == "discrete"
+            or self.agent_config.policy_type == "joint-energy"
+        ):
+            # both use the same update function
             metrics = self._update_discrete()
-        elif self.agent_config.policy_type == "joint-energy":
-            metrics = self._update_joint_energy()
         return metrics
 
     def collect_experiences(self) -> Dict[str, float]:
         with torch.no_grad():
-            action, log_prob, value, logits = self.get_action(self.state)
+            action, log_prob, value, terminate_prob, continue_logits = self.get_action(
+                self.state
+            )
             next_state, rewards, terminated, truncated, next_info = self.env.step(
                 action
             )
@@ -1144,33 +944,28 @@ class Agent(nn.Module):
                 }
 
                 # Log actor logits based on prediction type
-                if self.agent_config.policy_type == "continuous":
-                    metric.update(
-                        {
-                            "episode/actor_terminate_logit": float(logits[i][0]),
-                            "episode/actor_block_mean_logit": float(logits[i][1]),
-                            "episode/actor_block_std_logit": float(logits[i][2]),
-                        }
-                    )
-                elif self.agent_config.policy_type == "discrete":
-                    logits = F.softmax(logits, dim=-1)
-                    metric["episode/actor_terminate_logit"] = float(logits[i][0])
-                    if action[i] != 0:
-                        metric["episode/actor_continue_logit"] = float(
-                            logits[i][action[i]]
+                metric["episode/actor_terminate_prob"] = float(terminate_prob[i])
+                if action[i] != 0:
+                    if self.agent_config.policy_type == "continuous":
+                        metric.update(
+                            {
+                                "episode/actor_block_mean_logit": float(
+                                    continue_logits[i][0]
+                                ),
+                                "episode/actor_block_std_logit": float(
+                                    continue_logits[i][1]
+                                ),
+                            }
                         )
-                elif self.agent_config.policy_type == "joint-energy":
-                    terminate_logit = logits[0][i]
-                    continue_logits = F.softmax(logits[1][i], dim=-1)
-                    metric["episode/actor_terminate_logit"] = float(terminate_logit)
-                    if action[i] != 0:
+                    elif (
+                        self.agent_config.policy_type == "discrete"
+                        or self.agent_config.policy_type == "joint-energy"
+                    ):
+                        continue_prob = F.softmax(continue_logits[i], dim=-1)
                         continue_action = action[i] - 1  # adjust for 0-based index
                         metric["episode/actor_continue_logit"] = float(
-                            continue_logits[continue_action]
+                            continue_prob[continue_action]
                         )
-                    metric["episode/actor_max_continue_logit"] = float(
-                        continue_logits.max()
-                    )
 
                 metrics.append(metric)
 

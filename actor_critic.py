@@ -21,11 +21,19 @@ class ContinuousPolicyHead(nn.Module):
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
 
-        self.actor = nn.Sequential(
+        self.termination_actor = nn.Sequential(
             nn.Linear(self.feature_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, 3),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Sigmoid(),
+            nn.Flatten(-2),
+        )
+        self.block_size_actor = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, 2),
         )
 
     def forward(
@@ -34,20 +42,20 @@ class ContinuousPolicyHead(nn.Module):
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
     ) -> torch.Tensor:
-        actor_output = self.actor(features)
-        absolute_size = (previous_action + 1) + (1 - F.sigmoid(actor_output[:, 1])) * (
-            basis_dim - previous_action
-        )
-        actor_output = torch.stack(
+        termination_prob = self.termination_actor(features)
+        block_size_output = self.block_size_actor(features)
+        absolute_size = (previous_action + 1) + (
+            1 - F.sigmoid(block_size_output[:, 0])
+        ) * (basis_dim - previous_action)
+        block_size_logits = torch.stack(
             [
-                F.sigmoid(actor_output[:, 0]),
                 absolute_size,
-                F.softplus(actor_output[:, 2]),
+                F.softplus(block_size_output[:, 1]),
             ],
             dim=1,
         )
 
-        return actor_output
+        return termination_prob, block_size_logits
 
 
 class DiscretePolicyHead(nn.Module):
@@ -65,12 +73,19 @@ class DiscretePolicyHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
 
+        self.termination_actor = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_dim),
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Sigmoid(),
+            nn.Flatten(-2),
+        )
         self.actor = nn.Sequential(
             nn.Linear(self.feature_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, self.action_dim),
-            nn.Softmax(dim=-1),  # should be removed
+            nn.Linear(self.hidden_dim, self.action_dim - 1),
         )
 
     def forward(
@@ -79,28 +94,27 @@ class DiscretePolicyHead(nn.Module):
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
     ) -> torch.Tensor:
+        termination_logit = self.termination_actor(features)
+
         logits = self.actor(features)
 
         # logits [batch_size, action_dim]
         # basis_dim [batch_size]
         # last_action [batch_size]
         indices = (
-            torch.arange(self.action_dim, device=logits.device)
+            torch.arange(start=1, end=self.action_dim, device=logits.device)
             .unsqueeze(0)
-            .expand_as(logits)
+            .expand(features.size(0), -1)
         )
-        thresholds = previous_action.unsqueeze(1).expand_as(logits)
-        basis_dim_ = basis_dim.unsqueeze(1).expand_as(logits)
+        previous_action_ = previous_action.unsqueeze(1).expand(logits.size(0), 1)
+        basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
-        # indices == 0 is the termination action
-        valid_mask = ((indices >= thresholds) & (indices <= basis_dim_)) | (
-            indices == 0
-        )  # [batch_size, action_dim]
+        valid_mask = (indices >= previous_action_) & (indices <= basis_dim_)
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
 
-        return masked_logits
+        return termination_logit, masked_logits
 
 
 class JointEnergyBasedPolicyHead(nn.Module):
@@ -152,12 +166,15 @@ class JointEnergyBasedPolicyHead(nn.Module):
         termination_logit = self.termination_actor(features)
 
         indices = (
-            torch.arange(start=2, end=self.action_dim, device=features.device).float()
+            torch.arange(start=1, end=self.action_dim, device=features.device)
+            .float()
             .unsqueeze(0)
             .expand(features.size(0), -1)
         )
         index_embeddings = self.index_embedding(indices)
-        features_reshaped = features.unsqueeze(1).expand(-1, index_embeddings.size(1), -1)
+        features_reshaped = features.unsqueeze(1).expand(
+            -1, index_embeddings.size(1), -1
+        )
         logits = self.actor(torch.cat([features_reshaped, index_embeddings], dim=2))
 
         previous_action_ = previous_action.unsqueeze(1).expand(logits.size(0), 1)
@@ -172,7 +189,9 @@ class JointEnergyBasedPolicyHead(nn.Module):
 class ActorCritic(nn.Module):
     def __init__(
         self,
-        policy_type: Union[Literal["continuous"], Literal["discrete"], Literal["joint-energy"]],
+        policy_type: Union[
+            Literal["continuous"], Literal["discrete"], Literal["joint-energy"]
+        ],
         max_basis_dim: int,
         dropout_p: float = 0.1,
         gs_norms_embedding_hidden_dim: int = 128,
@@ -264,8 +283,15 @@ class ActorCritic(nn.Module):
         cached_states["gs_norms_embedding"] = gs_norms_embedding
         cached_states["prev_action_embedding"] = prev_action_embedding
 
-        actor_output = self.actor(combined, previous_action, basis_dim)
-        return actor_output, self.critic(combined).squeeze(-1), cached_states
+        termination_prob, block_output = self.actor(
+            combined, previous_action, basis_dim
+        )
+        return (
+            termination_prob,
+            block_output,
+            self.critic(combined).squeeze(-1),
+            cached_states,
+        )
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
