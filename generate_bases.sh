@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # List of dimensions to generate bases for
-dims=(40 48 56 64 96)
+dims=(40 48 56 64)
 dists=(uniform qary ntrulike knapsack)
 
 samples=10000
