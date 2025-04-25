@@ -34,6 +34,12 @@ def main():
     parser.add_argument(
         "--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval."
     )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Custom run name for the experiment. If not provided, a timestamped name will be generated.",
+    )
 
     env_args = parser.add_argument_group("Training Environment Settings")
     env_args.add_argument(
@@ -109,7 +115,9 @@ def main():
         "--discrete", action="store_true", help="Use discrete prediction policy."
     )
     policy_args.add_argument(
-        "--joint-energy", action="store_true", help="Use joint energy-based prediction policy."
+        "--joint-energy",
+        action="store_true",
+        help="Use joint energy-based prediction policy.",
     )
 
     reward_args = parser.add_argument_group("Reward Weights")
@@ -243,10 +251,18 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    checkpoint_dir = Path(
-        f"checkpoint/dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
-    )
+    if args.run_name:
+        run_name = args.run_name
+        checkpoint_dir = Path(f"checkpoint/{run_name}")
+        if checkpoint_dir.exists() and any(checkpoint_dir.iterdir()):
+            raise FileExistsError(
+                f"Checkpoint directory '{checkpoint_dir}' already exists and is not empty."
+            )
+    else:
+        start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        run_name = f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
+        checkpoint_dir = Path(f"checkpoint/{run_name}")
+
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
@@ -271,7 +287,6 @@ def main():
         logging.info("No GPU available, using the CPU instead.")
         device = torch.device("cpu")
 
-    run_name = f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
     wandb.init(project="bkz-rl-training", name=run_name)
 
     env_config = ReductionEnvConfig(
