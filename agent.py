@@ -1034,7 +1034,7 @@ class Agent(nn.Module):
 
         while not done:
             state = state.to(self.device)
-            action, _, _, _ = self.get_action(state)
+            action, _, _, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
             log_defect_history.append(next_info["log_defect"].item())

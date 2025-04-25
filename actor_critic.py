@@ -102,7 +102,7 @@ class DiscretePolicyHead(nn.Module):
         # basis_dim [batch_size]
         # last_action [batch_size]
         indices = (
-            torch.arange(start=1, end=self.action_dim, device=logits.device)
+            torch.arange(start=2, end=self.action_dim + 1, device=logits.device)
             .unsqueeze(0)
             .expand(features.size(0), -1)
         )
@@ -166,7 +166,7 @@ class JointEnergyBasedPolicyHead(nn.Module):
         termination_logit = self.termination_actor(features)
 
         indices = (
-            torch.arange(start=1, end=self.action_dim, device=features.device)
+            torch.arange(start=2, end=self.action_dim + 1, device=features.device)
             .float()
             .unsqueeze(0)
             .expand(features.size(0), -1)
