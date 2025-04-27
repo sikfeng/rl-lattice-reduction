@@ -585,6 +585,7 @@ class VectorizedReductionEnvironment:
                 infos_[key] = torch.tensor(
                     [info[key] for info in infos], device=actions.device
                 )
+        infos_ = TensorDict(infos_)
 
         return next_states_, rewards_, terminateds_, truncateds_, infos_
 

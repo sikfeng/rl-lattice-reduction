@@ -418,7 +418,6 @@ class Agent(nn.Module):
                 basis_stat_pred_losses = self.get_basis_stat_pred_loss(
                     states=states,
                     actions=actions,
-                    continue_mask=continue_mask,
                     current_info=batch["current_info"],
                 )
                 basis_stat_loss = {
@@ -629,7 +628,6 @@ class Agent(nn.Module):
                 basis_stat_pred_losses = self.get_basis_stat_pred_loss(
                     states=states,
                     actions=actions,
-                    continue_mask=continue_mask,
                     current_info=batch["current_info"],
                 )
                 basis_stat_loss = {
@@ -784,7 +782,6 @@ class Agent(nn.Module):
         self,
         states: torch.Tensor,
         actions: torch.Tensor,
-        continue_mask: torch.Tensor,
         current_info: TensorDict[str, torch.Tensor],
     ) -> Dict[str, float]:
         current_features = self.actor_critic.preprocess_inputs(states)
@@ -888,7 +885,6 @@ class Agent(nn.Module):
                 basis_stat_pred_losses = self.get_basis_stat_pred_loss(
                     states=self.state,
                     actions=action,
-                    continue_mask=action != 0,
                     current_info=self.info,
                 )
                 basis_stat_pred_reward = (
@@ -1034,6 +1030,8 @@ class Agent(nn.Module):
 
         while not done:
             state = state.to(self.device)
+            info = info.to(self.device)
+
             action, _, _, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
@@ -1058,7 +1056,6 @@ class Agent(nn.Module):
                 losses_ = self.get_basis_stat_pred_loss(
                     states=state,
                     actions=action,
-                    continue_mask=(action != 0),
                     current_info=info,
                 )
                 for k in losses_.keys():
