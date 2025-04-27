@@ -4,7 +4,7 @@
 dims=(40 48 56 64)
 dists=(uniform qary ntrulike knapsack)
 
-samples=10000
+samples=1000
 
 for dim in "${dims[@]}"; do
     echo "Generating random basis for n = ${dim}"
