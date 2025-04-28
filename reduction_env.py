@@ -295,6 +295,7 @@ class ReductionEnvironment:
             "basis": basis,
             "last_action": last_action,
             "basis_dim": torch.tensor([self.basis.ncols]),
+            "last_action_modified": torch.tensor([self.clean]),
         }
 
     def _get_info(self) -> Dict[str, Any]:
@@ -348,6 +349,8 @@ class ReductionEnvironment:
         self._update_history(action=1, time_taken=0)
 
         self.current_step = 0
+
+        self.clean = False
 
         return self._get_observation(), self._get_info()
 

@@ -41,10 +41,11 @@ class ContinuousPolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
+        previous_action_modified: torch.Tensor,
     ) -> torch.Tensor:
         termination_prob = self.termination_actor(features)
         block_size_output = self.block_size_actor(features)
-        absolute_size = (previous_action + 1) + (
+        absolute_size = (previous_action + ~previous_action_modified + 1) + (
             1 - F.sigmoid(block_size_output[:, 0])
         ) * (basis_dim - previous_action)
         block_size_logits = torch.stack(
@@ -93,6 +94,7 @@ class DiscretePolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
+        previous_action_modified: torch.Tensor,
     ) -> torch.Tensor:
         termination_logit = self.termination_actor(features)
 
@@ -106,7 +108,11 @@ class DiscretePolicyHead(nn.Module):
             .unsqueeze(0)
             .expand(features.size(0), -1)
         )
-        previous_action_ = previous_action.unsqueeze(1).expand(logits.size(0), 1)
+        previous_action_ = (
+            (previous_action + ~previous_action_modified)
+            .unsqueeze(1)
+            .expand(logits.size(0), 1)
+        )
         basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
@@ -162,6 +168,7 @@ class JointEnergyBasedPolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
+        previous_action_modified: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         termination_logit = self.termination_actor(features)
 
@@ -177,7 +184,11 @@ class JointEnergyBasedPolicyHead(nn.Module):
         )
         logits = self.actor(torch.cat([features_reshaped, index_embeddings], dim=2))
 
-        previous_action_ = previous_action.unsqueeze(1).expand(logits.size(0), 1)
+        previous_action_ = (
+            (previous_action + ~previous_action_modified)
+            .unsqueeze(1)
+            .expand(logits.size(0), 1)
+        )
         basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
         # mask entries which are False will be masked out
         valid_mask = (indices >= previous_action_) & (indices <= basis_dim_)
@@ -264,6 +275,7 @@ class ActorCritic(nn.Module):
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
         previous_action = tensordict["last_action"]
+        previous_action_modified = tensordict["last_action_modified"]
 
         if "gs_norms_embedding" in cached_states:
             gs_norms_embedding = cached_states["gs_norms_embedding"]
@@ -284,7 +296,7 @@ class ActorCritic(nn.Module):
         cached_states["prev_action_embedding"] = prev_action_embedding
 
         termination_prob, block_output = self.actor(
-            combined, previous_action, basis_dim
+            combined, previous_action, basis_dim, previous_action_modified
         )
         return (
             termination_prob,
@@ -313,6 +325,7 @@ class ActorCritic(nn.Module):
                 "gs_norms": gs_norms,
                 "last_action": tensordict["last_action"],
                 "basis_dim": basis_dim,
+                "last_action_modified": tensordict["last_action_modified"],
             },
             batch_size=[],
         )
