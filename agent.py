@@ -59,6 +59,7 @@ class AgentConfig:
         basis_stat_predictor_reward_weight: float = 0.1,
         simulator_config: Optional[SimulatorConfig] = None,
         basis_stat_predictor_config: Optional[BasisStatPredictorConfig] = None,
+        normalize_gs_norms: bool = False,
     ) -> None:
         self.ppo_config = ppo_config
         self.device = device
@@ -90,6 +91,8 @@ class AgentConfig:
             )
         )
 
+        self.normalize_gs_norms = normalize_gs_norms
+
     def __str__(self):
         self_dict = vars(self)
         return f"AgentConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
@@ -105,6 +108,7 @@ class Agent(nn.Module):
             policy_type=self.agent_config.policy_type,
             max_basis_dim=self.agent_config.env_config.net_dim,
             dropout_p=self.agent_config.dropout_p,
+            normalize_gs_norms=self.agent_config.normalize_gs_norms,
         )
         self.optimizer = optim.AdamW(
             self.actor_critic.parameters(),

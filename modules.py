@@ -41,12 +41,14 @@ class GSNormEncoder(nn.Module):
         dropout_p: float,
         max_basis_dim: int,
         hidden_dim: int,
+        normalize_inputs: bool = False,
     ) -> None:
         super().__init__()
 
         self.max_basis_dim = max_basis_dim
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
+        self.normalize_inputs = normalize_inputs
 
         # Learnable CLS token
         self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
@@ -83,6 +85,11 @@ class GSNormEncoder(nn.Module):
         gs_norms: torch.Tensor,
         pad_mask: torch.Tensor,
     ) -> torch.Tensor:
+        if self.normalize_inputs:
+            # the GS norms provided are log-transformed
+            # hence should do a linear shift
+            gs_norms = gs_norms - gs_norms[~pad_mask[:, 1:]].mean(dim=-1, keepdim=True)
+
         x = self.input_projection(gs_norms)
 
         cls_tokens = self.cls_token.expand(gs_norms.size(0), -1, -1)

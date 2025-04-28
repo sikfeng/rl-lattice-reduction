@@ -148,7 +148,9 @@ def main():
 
     # Process each checkpoint in order
     for checkpoint_episode, pth_file in checkpoint_files:
-        yaml_filename = f"episode_{checkpoint_episode}_dim_{args.dim}_dist_{args.dist}.yaml"
+        yaml_filename = (
+            f"episode_{checkpoint_episode}_dim_{args.dim}_dist_{args.dist}.yaml"
+        )
         yaml_file = reports_dir / yaml_filename
         if yaml_file.exists():
             logging.info(f"Skipping {pth_file} as {yaml_file} exists.")
