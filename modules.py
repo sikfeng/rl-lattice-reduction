@@ -184,6 +184,9 @@ class GSNormDecoder(nn.Module):
                 target_gs_norms=target_gs_norms,
                 device=device,
             )
+
+        pad_mask = self._generate_pad_mask(basis_dim)
+        predicted_gs_norms[pad_mask] = 0
         if self.normalize_inputs:
             pad_mask = self._generate_pad_mask(basis_dim)
             # the GS norms provided are log-transformed
