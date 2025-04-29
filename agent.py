@@ -125,6 +125,7 @@ class Agent(nn.Module):
                 hidden_dim=self.agent_config.simulator_config.hidden_dim,
                 device=self.device,
                 teacher_forcing=self.agent_config.teacher_forcing,
+                normalize_gs_norms=self.agent_config.normalize_gs_norms,
             )
             self.sim_optimizer = optim.AdamW(
                 self.simulator.parameters(),
@@ -138,6 +139,7 @@ class Agent(nn.Module):
                 hidden_dim=self.agent_config.basis_stat_predictor_config.hidden_dim,
                 device=self.device,
                 teacher_forcing=self.agent_config.teacher_forcing,
+                normalize_gs_norms=self.agent_config.normalize_gs_norms,
             )
             self.basis_stat_predictor_optimizer = optim.AdamW(
                 self.basis_stat_predictor.parameters(),

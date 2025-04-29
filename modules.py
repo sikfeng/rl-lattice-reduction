@@ -125,6 +125,7 @@ class GSNormDecoder(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         dropout_p: float = 0.1,
+        normalize_inputs: bool = False,
     ):
         super().__init__()
 
@@ -132,6 +133,7 @@ class GSNormDecoder(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.dropout_p = dropout_p
+        self.normalize_inputs = normalize_inputs
 
         self.bos_token = nn.Parameter(torch.randn(1, 1))
         decoder_layer = nn.TransformerDecoderLayer(
@@ -165,7 +167,7 @@ class GSNormDecoder(nn.Module):
     ):
         device = gs_norms_embedding.device
         if target_gs_norms is None:
-            simulated_gs_norms = self._autoregressive_generation(
+            predicted_gs_norms = self._autoregressive_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
@@ -173,14 +175,36 @@ class GSNormDecoder(nn.Module):
                 device=device,
             )
         else:
-            simulated_gs_norms = self._teacher_forced_generation(
+            predicted_gs_norms = self._teacher_forced_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
                 target_gs_norms=target_gs_norms,
                 device=device,
             )
-        return simulated_gs_norms
+        if self.normalize_inputs:
+            pad_mask = self._generate_pad_mask(basis_dim)
+            # the GS norms provided are log-transformed
+            # hence should do a linear shift
+            predicted_gs_norms = predicted_gs_norms - predicted_gs_norms[~pad_mask].mean(dim=-1, keepdim=True)
+        return predicted_gs_norms
+
+    def _generate_pad_mask(
+        self,
+        seq_lengths: torch.Tensor,
+    ):
+        batch_size = seq_lengths.size(0)
+        padding_mask = torch.zeros(
+            batch_size,
+            self.gs_norms_encoder.max_basis_dim,
+            dtype=torch.bool,
+            device=seq_lengths.device,
+        )
+
+        for i, length in enumerate(seq_lengths.int()):
+            padding_mask[i, length:] = True
+
+        return padding_mask
 
     def _autoregressive_generation(
         self,
