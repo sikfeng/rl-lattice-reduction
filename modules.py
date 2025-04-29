@@ -88,7 +88,9 @@ class GSNormEncoder(nn.Module):
         if self.normalize_inputs:
             # the GS norms provided are log-transformed
             # hence should do a linear shift
-            gs_norms = gs_norms - gs_norms[~pad_mask[:, 1:]].mean(dim=-1, keepdim=True)
+            gs_norms[~pad_mask[:, 1:]] = gs_norms[~pad_mask[:, 1:]] - gs_norms[
+                ~pad_mask[:, 1:]
+            ].mean(dim=-1, keepdim=True)
 
         x = self.input_projection(gs_norms)
 
@@ -186,7 +188,11 @@ class GSNormDecoder(nn.Module):
             pad_mask = self._generate_pad_mask(basis_dim)
             # the GS norms provided are log-transformed
             # hence should do a linear shift
-            predicted_gs_norms = predicted_gs_norms - predicted_gs_norms[~pad_mask].mean(dim=-1, keepdim=True)
+
+            # note that this normalization on the log-transformed norms actually corresponds to dividing the GS norms by their geometric mean
+            predicted_gs_norms[~pad_mask] = predicted_gs_norms[
+                ~pad_mask
+            ] - predicted_gs_norms[~pad_mask].mean(dim=-1, keepdim=True)
         return predicted_gs_norms
 
     def _generate_pad_mask(
