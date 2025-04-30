@@ -115,8 +115,8 @@ def main():
         logging.info("No GPU available, using the CPU instead.")
         device = torch.device("cpu")
 
-    run_id = Path(args.run_dir).name.replace(":", "_") + f"_test_dim_{args.dim}"
-    wandb.init(project="bkz-rl-evaluation", name=run_id, id=run_id, resume="allow")
+    run_id = f"{Path(args.run_dir).name}/dim_{args.dim}_dist_{args.dist}"
+    wandb.init(project="bkz-rl-evaluation", name=run_id)
 
     data_dir = Path("random_bases")
 
@@ -133,7 +133,7 @@ def main():
     run_dir = Path(args.run_dir)
 
     # Create reports directory if it doesn't exist
-    reports_dir = run_dir / "reports"
+    reports_dir = run_dir / "reports" / f"dim_{args.dim}-dist_{args.dist}"
     reports_dir.mkdir(exist_ok=True)
 
     checkpoint_files = []
@@ -150,9 +150,7 @@ def main():
 
     # Process each checkpoint in order
     for checkpoint_episode, pth_file in checkpoint_files:
-        yaml_filename = (
-            f"episode_{checkpoint_episode}_dim_{args.dim}_dist_{args.dist}.yaml"
-        )
+        yaml_filename = f"episode_{checkpoint_episode}.yaml"
         yaml_file = reports_dir / yaml_filename
         if yaml_file.exists():
             logging.info(f"Skipping {pth_file} as {yaml_file} exists.")
