@@ -722,18 +722,41 @@ class Agent(nn.Module):
         raw_logs = {}
         if continue_mask.any():
             raw_logs = {
-                "gs_norm_predicted": preds["reconstructed_gs_norms"].detach().cpu().tolist(),
-                "gs_norm_target": current_features["gs_norms"][continue_mask].detach().cpu().tolist(),
-                "prev_act_predicted": preds["reconstructed_prev_action"].detach().cpu().tolist(),
-                "prev_act_target": current_features["last_action"][continue_mask].detach().cpu().tolist(),
-                "current_act_predicted": preds["reconstructed_current_action"].detach().cpu().tolist(),
+                "gs_norm_predicted": preds["reconstructed_gs_norms"]
+                .detach()
+                .cpu()
+                .tolist(),
+                "gs_norm_target": current_features["gs_norms"][continue_mask]
+                .detach()
+                .cpu()
+                .tolist(),
+                "prev_act_predicted": preds["reconstructed_prev_action"]
+                .detach()
+                .cpu()
+                .tolist(),
+                "prev_act_target": current_features["last_action"][continue_mask]
+                .detach()
+                .cpu()
+                .tolist(),
+                "current_act_predicted": preds["reconstructed_current_action"]
+                .detach()
+                .cpu()
+                .tolist(),
                 "current_act_target": actions[continue_mask].detach().cpu().tolist(),
-                "log_defect_predicted": preds["reconstructed_log_defect"].detach().cpu().tolist(),
+                "log_defect_predicted": preds["reconstructed_log_defect"]
+                .detach()
+                .cpu()
+                .tolist(),
                 "log_defect_target": current_info["log_defect"].detach().cpu().tolist(),
-                "basis_dim_predicted": preds["reconstructed_basis_dim"].detach().cpu().tolist(),
-                "basis_dim_target": current_features["basis_dim"].detach().cpu().tolist(),
+                "basis_dim_predicted": preds["reconstructed_basis_dim"]
+                .detach()
+                .cpu()
+                .tolist(),
+                "basis_dim_target": current_features["basis_dim"]
+                .detach()
+                .cpu()
+                .tolist(),
             }
-            print(raw_logs)
 
         return losses, raw_logs
 
@@ -890,12 +913,14 @@ class Agent(nn.Module):
                 episode_rewards[key] += float(value)
             steps += 1
 
-            episode_logs.append({
-                "action": int(action),
-                "reward": reward,
-                "termination_prob": float(termination_prob),
-                "continue_logits": continue_logits,
-            })
+            episode_logs.append(
+                {
+                    "action": int(action),
+                    "reward": reward,
+                    "termination_prob": float(termination_prob),
+                    "continue_logits": continue_logits,
+                }
+            )
 
             if self.agent_config.auxiliary_predictor:
                 losses_, raw_logs = self.get_auxiliary_predictor_loss(
