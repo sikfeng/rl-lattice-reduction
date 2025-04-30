@@ -850,10 +850,8 @@ class Agent(nn.Module):
         shortest_length_history = [info["shortest_length"].item()]
         time_history = [info["time"].item()]
 
-        if self.agent_config.simulator:
-            sim_losses = defaultdict(list)
-        if self.agent_config.basis_stat_predictor:
-            basis_stat_pred_losses = defaultdict(list)
+        if self.agent_config.auxiliary_predictor:
+            auxiliary_predictor_losses_dict = defaultdict(list)
 
         done = False
         episode_reward = 0
@@ -864,7 +862,7 @@ class Agent(nn.Module):
             state = state.to(self.device)
             info = info.to(self.device)
 
-            action, _, _, _, _ = self.get_action(state)
+            action, _, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
             log_defect_history.append(next_info["log_defect"].item())
@@ -875,23 +873,14 @@ class Agent(nn.Module):
                 episode_rewards[key] += float(value)
             steps += 1
 
-            if self.agent_config.simulator:
-                losses_ = self.get_sim_loss(
-                    action,
-                    state,
-                    next_state,
-                    next_info["time"],
-                )
-                sim_losses["gs_norm_losses"].append(float(losses_["gs_norm_loss"]))
-                sim_losses["time_losses"].append(float(losses_["time_loss"]))
-            if self.agent_config.basis_stat_predictor:
-                losses_ = self.get_basis_stat_pred_loss(
+            if self.agent_config.auxiliary_predictor:
+                losses_ = self.get_auxiliary_predictor_loss(
                     states=state,
                     actions=action,
                     current_info=info,
                 )
                 for k in losses_.keys():
-                    basis_stat_pred_losses[k].append(float(losses_[k]))
+                    auxiliary_predictor_losses_dict[k].append(float(losses_[k]))
 
             state = next_state
             info = next_info
@@ -914,13 +903,10 @@ class Agent(nn.Module):
             "gh": float(batch["gaussian_heuristic"]),
         }
 
-        if self.agent_config.simulator:
-            for k in sim_losses:
-                metrics["sim/" + k] = float(np.nanmean(sim_losses[k]))
-        if self.agent_config.basis_stat_predictor:
-            for k in basis_stat_pred_losses:
-                metrics["basis_stat_pred/" + k] = float(
-                    np.nanmean(basis_stat_pred_losses[k])
+        if self.agent_config.auxiliary_predictor:
+            for k in auxiliary_predictor_losses_dict:
+                metrics["auxiliary/" + k] = float(
+                    np.nanmean(auxiliary_predictor_losses_dict[k])
                 )
 
         metrics.update(episode_rewards)
