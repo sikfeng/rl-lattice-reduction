@@ -1,6 +1,6 @@
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import numpy as np
 from tensordict import TensorDict
@@ -613,7 +613,7 @@ class Agent(nn.Module):
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
             if self.agent_config.simulator:
-                simulator_losses = self.get_sim_loss(
+                simulator_losses, _ = self.get_sim_loss(
                     actions=actions,
                     states=states,
                     next_states=next_states,
@@ -625,7 +625,7 @@ class Agent(nn.Module):
                 simulator_loss.requires_grad_()
 
             if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                basis_stat_pred_losses, _ = self.get_basis_stat_pred_loss(
                     states=states,
                     actions=actions,
                     current_info=batch["current_info"],
@@ -740,7 +740,7 @@ class Agent(nn.Module):
         states: torch.Tensor,
         next_states: torch.Tensor,
         time_taken: torch.Tensor,
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], Dict[str, Any]]:
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
 
@@ -776,14 +776,23 @@ class Agent(nn.Module):
             "gs_norm_loss": gs_norm_sim_loss,
             "time_loss": time_sim_loss,
         }
-        return losses
+
+        raw_logs = {}
+        if continue_mask.any():
+            raw_logs = {
+                "gs_norm_predicted": predicted_gs_norms.detach().cpu().numpy(),
+                "gs_norm_target": next_features["gs_norms"][continue_mask].detach().cpu().numpy(),
+                "time_predicted": predicted_time.detach().cpu().numpy(),
+                "time_target": time_taken[continue_mask].detach().cpu().numpy(),
+            }
+        return losses, raw_logs
 
     def get_basis_stat_pred_loss(
         self,
         states: torch.Tensor,
         actions: torch.Tensor,
         current_info: TensorDict[str, torch.Tensor],
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], Dict[str, Any]]:
         current_features = self.actor_critic.preprocess_inputs(states)
 
         losses = {
@@ -835,7 +844,22 @@ class Agent(nn.Module):
                 preds["basis_dim"] - current_features["basis_dim"][continue_mask]
             ) ** 2
 
-        return losses
+        raw_logs = {}
+        if continue_mask.any():
+            raw_logs = {
+                "gs_norm_predicted": preds["gs_norms"].detach().cpu().numpy(),
+                "gs_norm_target": current_features["gs_norms"][continue_mask].detach().cpu().numpy(),
+                "prev_act_predicted": preds["previous_action"].detach().cpu().numpy(),
+                "prev_act_target": current_features["last_action"][continue_mask].detach().cpu().numpy(),
+                "current_act_predicted": preds["current_action"].detach().cpu().numpy(),
+                "current_act_target": actions.detach().cpu().numpy(),
+                "log_defect_predicted": preds["log_defect"].detach().cpu().numpy(),
+                "log_defect_target": current_info["log_defect"].detach().cpu().numpy(),
+                "basis_dim_predicted": preds["basis_dim"].detach().cpu().numpy(),
+                "basis_dim_target": current_features["basis_dim"].detach().cpu().numpy(),
+            }
+
+        return losses, raw_logs
 
     def update(self) -> Dict[str, float]:
         if len(self.replay_buffer) < self.agent_config.ppo_config.minibatch_size:
@@ -861,7 +885,7 @@ class Agent(nn.Module):
             )
             reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
             if self.agent_config.simulator:
-                simulator_losses = self.get_sim_loss(
+                simulator_losses, _ = self.get_sim_loss(
                     action,
                     self.state,
                     next_state,
@@ -882,7 +906,7 @@ class Agent(nn.Module):
                 simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
                 reward = reward + torch.clamp(simulator_reward_, max=10)
             if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
+                basis_stat_pred_losses, _ = self.get_basis_stat_pred_loss(
                     states=self.state,
                     actions=action,
                     current_info=self.info,
@@ -1028,11 +1052,12 @@ class Agent(nn.Module):
         episode_rewards = defaultdict(int)
         steps = 0
 
+        episode_logs = []
         while not done:
             state = state.to(self.device)
             info = info.to(self.device)
 
-            action, _, _, _, _ = self.get_action(state)
+            action, _, _, termination_prob, continue_logits = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
             log_defect_history.append(next_info["log_defect"].item())
@@ -1043,8 +1068,15 @@ class Agent(nn.Module):
                 episode_rewards[key] += float(value)
             steps += 1
 
+            episode_logs.append({
+                "action": int(action),
+                "reward": reward,
+                "termination_prob": float(termination_prob),
+                "continue_logits": continue_logits,
+            })
+
             if self.agent_config.simulator:
-                losses_ = self.get_sim_loss(
+                losses_, raw_logs = self.get_sim_loss(
                     action,
                     state,
                     next_state,
@@ -1052,14 +1084,17 @@ class Agent(nn.Module):
                 )
                 sim_losses["gs_norm_losses"].append(float(losses_["gs_norm_loss"]))
                 sim_losses["time_losses"].append(float(losses_["time_loss"]))
+                episode_logs[-1]["simulator_logs"] = raw_logs
+
             if self.agent_config.basis_stat_predictor:
-                losses_ = self.get_basis_stat_pred_loss(
+                losses_, raw_logs = self.get_basis_stat_pred_loss(
                     states=state,
                     actions=action,
                     current_info=info,
                 )
                 for k in losses_.keys():
                     basis_stat_pred_losses[k].append(float(losses_[k]))
+                episode_logs[-1]["basis_stat_pred"] = raw_logs
 
             state = next_state
             info = next_info
@@ -1093,7 +1128,7 @@ class Agent(nn.Module):
 
         metrics.update(episode_rewards)
 
-        return metrics
+        return metrics, episode_logs
 
     def save(self, path: Path):
         checkpoint = {

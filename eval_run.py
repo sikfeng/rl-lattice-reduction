@@ -30,7 +30,7 @@ def evaluate(
                 desc=f"Validating Checkpoint {checkpoint_episode}",
             )
         ):
-            batch_metrics = agent.evaluate(batch)
+            batch_metrics, episode_logs = agent.evaluate(batch)
 
             per_batch_log = {
                 f"dim_{dim}/{metric}_{checkpoint_episode}": value
@@ -38,6 +38,8 @@ def evaluate(
             }
             per_batch_log["episode"] = episode_index
             wandb.log(per_batch_log)
+
+            wandb.log({"dim_{dim}/raw_episode_logs": episode_logs})
 
             for metric, value in batch_metrics.items():
                 aggregated_metrics[metric].append(value)
