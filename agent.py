@@ -12,9 +12,8 @@ from torchrl.data import ListStorage, ReplayBuffer
 from torchrl.objectives.value.functional import generalized_advantage_estimate
 
 from actor_critic import ActorCritic
-from basis_stat_trainer import BasisStatPredictor, BasisStatPredictorConfig
+from modules import AuxiliaryPredictionHeads, AuxiliaryPredictorConfig
 from reduction_env import ReductionEnvConfig, VectorizedReductionEnvironment
-from simulator import Simulator, SimulatorConfig
 
 
 class PPOConfig:
@@ -49,44 +48,34 @@ class AgentConfig:
         batch_size: int = 1,
         dropout_p: float = 0.1,
         env_config: Optional[ReductionEnvConfig] = None,
-        simulator: bool = False,
-        basis_stat_predictor: bool = False,
-        teacher_forcing: bool = False,
         policy_type: str = Union[
             Literal["continuous"], Literal["discrete"], Literal["joint-energ"]
         ],
-        simulator_reward_weight: float = 0.1,
-        basis_stat_predictor_reward_weight: float = 0.1,
-        simulator_config: Optional[SimulatorConfig] = None,
-        basis_stat_predictor_config: Optional[BasisStatPredictorConfig] = None,
+        auxiliary_predictor: bool = False,
+        teacher_forcing: bool = False,
+        auxiliary_predictor_reward_weight: float = 0.1,
+        auxiliary_predictor_config: Optional[AuxiliaryPredictorConfig] = None,
     ) -> None:
         self.ppo_config = ppo_config
         self.device = device
         self.batch_size = batch_size
         self.dropout_p = dropout_p
 
-        self.simulator = simulator
-        self.basis_stat_predictor = basis_stat_predictor
+        self.auxiliary_predictor = auxiliary_predictor
         self.teacher_forcing = teacher_forcing
 
         self.policy_type = policy_type
         self.env_config = env_config if env_config is not None else ReductionEnvConfig()
-        self.simulator_reward_weight = 0.0 if not simulator else simulator_reward_weight
-        self.basis_stat_predictor_reward_weight = (
-            0.0 if not basis_stat_predictor else basis_stat_predictor_reward_weight
+        self.auxiliary_reward_weight = (
+            0.0 if not auxiliary_predictor else auxiliary_predictor_reward_weight
         )
-        self.simulator_config = (
+        self.auxiliary_predictor_config = (
             None
-            if not simulator
-            else simulator_config if simulator_config is not None else SimulatorConfig()
-        )
-        self.basis_stat_predictor_config = (
-            None
-            if not basis_stat_predictor
+            if not auxiliary_predictor
             else (
-                basis_stat_predictor_config
-                if basis_stat_predictor_config is not None
-                else BasisStatPredictorConfig()
+                auxiliary_predictor_config
+                if auxiliary_predictor_config is not None
+                else AuxiliaryPredictorConfig()
             )
         )
 
@@ -111,33 +100,19 @@ class Agent(nn.Module):
             lr=self.agent_config.ppo_config.lr,
         )
 
-        self.simulator = None
-        self.basis_stat_predictor = None
-        if self.agent_config.simulator:
-            self.simulator = Simulator(
+        self.auxiliary_predictor = None
+        if self.agent_config.auxiliary_predictor:
+            self.auxiliary_predictor = AuxiliaryPredictionHeads(
                 gs_norms_encoder=self.actor_critic.gs_norms_encoder,
                 action_encoder=self.actor_critic.action_encoder,
                 dropout_p=self.agent_config.dropout_p,
-                hidden_dim=self.agent_config.simulator_config.hidden_dim,
+                hidden_dim=self.agent_config.auxiliary_predictor_config.hidden_dim,
                 device=self.device,
                 teacher_forcing=self.agent_config.teacher_forcing,
             )
-            self.sim_optimizer = optim.AdamW(
-                self.simulator.parameters(),
-                lr=self.agent_config.simulator_config.lr,
-            )
-        if self.agent_config.basis_stat_predictor:
-            self.basis_stat_predictor = BasisStatPredictor(
-                gs_norms_encoder=self.actor_critic.gs_norms_encoder,
-                action_encoder=self.actor_critic.action_encoder,
-                dropout_p=self.agent_config.dropout_p,
-                hidden_dim=self.agent_config.basis_stat_predictor_config.hidden_dim,
-                device=self.device,
-                teacher_forcing=self.agent_config.teacher_forcing,
-            )
-            self.basis_stat_predictor_optimizer = optim.AdamW(
-                self.basis_stat_predictor.parameters(),
-                lr=self.agent_config.basis_stat_predictor_config.lr,
+            self.auxiliary_predictor_optimizer = optim.AdamW(
+                self.auxiliary_predictor.parameters(),
+                lr=self.agent_config.auxiliary_predictor_config.lr,
             )
 
         self.mse_loss = nn.MSELoss()
@@ -201,7 +176,7 @@ class Agent(nn.Module):
         with torch.no_grad():
             basis_dim = state["basis_dim"]
             last_action = state["last_action"]
-            termination_prob, continue_logits, value, _ = self.actor_critic(state)
+            termination_prob, continue_logits, value = self.actor_critic(state)
 
             if self.agent_config.policy_type == "continuous":
                 block_size_float, block_size_std = continue_logits.unbind(dim=1)
@@ -312,8 +287,8 @@ class Agent(nn.Module):
             The computed `values` and `next_values` are used to calculate the temporal-difference
             errors (deltas), which are the building blocks for GAE.
             """
-            _, _, values, _ = self.actor_critic(states)
-            _, _, next_values, _ = self.actor_critic(next_states)
+            _, _, values = self.actor_critic(states)
+            _, _, next_values = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.agent_config.ppo_config.gamma,
@@ -331,17 +306,11 @@ class Agent(nn.Module):
         clip_fractions = []
         approx_kls = []
 
-        if self.agent_config.simulator:
-            gs_norm_sim_losses = []
-            time_sim_losses = []
-
-        if self.agent_config.basis_stat_predictor:
-            basis_stat_losses = defaultdict(list)
+        if self.agent_config.auxiliary_predictor:
+            auxiliary_predictor_losses_dict = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            termination_probs, block_logits, values, cached_states = self.actor_critic(
-                states
-            )
+            termination_probs, block_logits, values = self.actor_critic(states)
             block_mean_preds, block_pred_std = block_logits.unbind(dim=1)
             # term_probs, block_preds, values [batch_size]
 
@@ -401,36 +370,23 @@ class Agent(nn.Module):
             entropy_loss = -(term_entropy + block_entropy)
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-
-            if self.agent_config.simulator:
-                simulator_losses = self.get_sim_loss(
-                    actions=actions,
+            if self.agent_config.auxiliary_predictor:
+                auxiliary_predictor_losses = self.get_auxiliary_predictor_loss(
                     states=states,
                     next_states=next_states,
-                    time_taken=batch["next_info"]["time"],
-                )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
-                time_sim_loss = simulator_losses["time_loss"].nanmean()
-                simulator_loss = gs_norm_sim_loss + time_sim_loss
-                simulator_loss.requires_grad_()
-
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses = self.get_basis_stat_pred_loss(
-                    states=states,
                     actions=actions,
                     current_info=batch["current_info"],
+                    next_info=batch["next_info"],
                 )
-                basis_stat_loss = {
-                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
+                auxiliary_predictor_loss = {
+                    k: v.nanmean() for k, v in auxiliary_predictor_losses.items()
                 }
-                basis_stat_pred_loss = sum(basis_stat_loss.values())
-                basis_stat_pred_loss.requires_grad_()
+                auxiliary_predictor_losses = sum(auxiliary_predictor_loss.values())
+                auxiliary_predictor_losses.requires_grad_()
 
             self.optimizer.zero_grad()
-            if self.agent_config.simulator:
-                self.sim_optimizer.zero_grad()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.zero_grad()
+            if self.agent_config.auxiliary_predictor:
+                self.auxiliary_predictor_optimizer.zero_grad()
 
             actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -438,24 +394,16 @@ class Agent(nn.Module):
                 self.agent_config.ppo_config.clip_grad_norm,
             )
 
-            if self.agent_config.simulator:
-                simulator_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(),
-                    self.agent_config.ppo_config.clip_grad_norm,
-                )
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_loss.backward()
+            if self.agent_config.auxiliary_predictor:
+                auxiliary_predictor_losses.backward()
                 torch.nn.utils.clip_grad_norm_(
                     self.parameters(),
                     self.agent_config.ppo_config.clip_grad_norm,
                 )
 
             self.optimizer.step()
-            if self.agent_config.simulator:
-                self.sim_optimizer.step()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.step()
+            if self.agent_config.auxiliary_predictor:
+                self.auxiliary_predictor_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
@@ -491,12 +439,9 @@ class Agent(nn.Module):
             approx_kl = (old_log_probs - new_log_probs).mean().item()
             approx_kls.append(approx_kl)
 
-            if self.agent_config.simulator:
-                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
-                time_sim_losses.append(time_sim_loss.item())
-            if self.agent_config.basis_stat_predictor:
-                for k, v in basis_stat_loss.items():
-                    basis_stat_losses[k].append(v.item())
+            if self.agent_config.auxiliary_predictor:
+                for k, v in auxiliary_predictor_loss.items():
+                    auxiliary_predictor_losses_dict[k].append(v.item())
 
         self.replay_buffer.empty()
 
@@ -514,16 +459,10 @@ class Agent(nn.Module):
             "update/advantages_std": advantages.std().item(),
             "update/clip_fraction": np.mean(clip_fractions),
         }
-        if self.agent_config.simulator:
-            metrics.update(
-                {
-                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
-                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
-                }
-            )
-        if self.agent_config.basis_stat_predictor:
-            for k, v in basis_stat_losses.items():
-                metrics[f"update/basis_stat_{k}"] = np.mean(v)
+        if self.agent_config.auxiliary_predictor:
+            for k, v in auxiliary_predictor_losses_dict.items():
+                metrics[f"update/auxiliary/{k}"] = np.mean(v)
+
         return metrics
 
     def _update_discrete(self) -> Dict[str, float]:
@@ -539,8 +478,8 @@ class Agent(nn.Module):
         dones = batch["done"]
 
         with torch.no_grad():
-            _, _, values, _ = self.actor_critic(states)
-            _, _, next_values, _ = self.actor_critic(next_states)
+            _, _, values = self.actor_critic(states)
+            _, _, next_values = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.agent_config.ppo_config.gamma,
@@ -558,17 +497,11 @@ class Agent(nn.Module):
         clip_fractions = []
         approx_kls = []
 
-        if self.agent_config.simulator:
-            gs_norm_sim_losses = []
-            time_sim_losses = []
-
-        if self.agent_config.basis_stat_predictor:
-            basis_stat_losses = defaultdict(list)
+        if self.agent_config.auxiliary_predictor:
+            auxiliary_predictor_losses_dict = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            termination_probs, continue_logits, values, cached_states = (
-                self.actor_critic(states)
-            )
+            termination_probs, continue_logits, values = self.actor_critic(states)
 
             # Create action masks
             terminate_mask = actions == 0  # [batch_size]
@@ -612,35 +545,23 @@ class Agent(nn.Module):
             entropy_loss = -(term_entropy + continue_entropy)
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-            if self.agent_config.simulator:
-                simulator_losses, _ = self.get_sim_loss(
-                    actions=actions,
+            if self.agent_config.auxiliary_predictor:
+                auxiliary_predictor_losses, _ = self.get_auxiliary_predictor_loss(
                     states=states,
                     next_states=next_states,
-                    time_taken=batch["next_info"]["time"],
-                )
-                gs_norm_sim_loss = simulator_losses["gs_norm_loss"].nanmean()
-                time_sim_loss = simulator_losses["time_loss"].nanmean()
-                simulator_loss = gs_norm_sim_loss + time_sim_loss
-                simulator_loss.requires_grad_()
-
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses, _ = self.get_basis_stat_pred_loss(
-                    states=states,
                     actions=actions,
                     current_info=batch["current_info"],
+                    next_info=batch["next_info"],
                 )
-                basis_stat_loss = {
-                    k: v.nanmean() for k, v in basis_stat_pred_losses.items()
+                auxiliary_predictor_loss = {
+                    k: v.nanmean() for k, v in auxiliary_predictor_losses.items()
                 }
-                basis_stat_pred_loss = sum(basis_stat_loss.values())
-                basis_stat_pred_loss.requires_grad_()
+                auxiliary_predictor_losses = sum(auxiliary_predictor_loss.values())
+                auxiliary_predictor_losses.requires_grad_()
 
             self.optimizer.zero_grad()
-            if self.agent_config.simulator:
-                self.sim_optimizer.zero_grad()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.zero_grad()
+            if self.agent_config.auxiliary_predictor:
+                self.auxiliary_predictor_optimizer.zero_grad()
 
             actor_critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -648,24 +569,16 @@ class Agent(nn.Module):
                 self.agent_config.ppo_config.clip_grad_norm,
             )
 
-            if self.agent_config.simulator:
-                simulator_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(),
-                    self.agent_config.ppo_config.clip_grad_norm,
-                )
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_loss.backward()
+            if self.agent_config.auxiliary_predictor:
+                auxiliary_predictor_losses.backward()
                 torch.nn.utils.clip_grad_norm_(
                     self.parameters(),
                     self.agent_config.ppo_config.clip_grad_norm,
                 )
 
             self.optimizer.step()
-            if self.agent_config.simulator:
-                self.sim_optimizer.step()
-            if self.agent_config.basis_stat_predictor:
-                self.basis_stat_predictor_optimizer.step()
+            if self.agent_config.auxiliary_predictor:
+                self.auxiliary_predictor_optimizer.step()
 
             # Logging metrics
             actor_losses.append(actor_loss.item())
@@ -698,12 +611,9 @@ class Agent(nn.Module):
             approx_kl = (old_log_probs - new_log_probs).mean().item()
             approx_kls.append(approx_kl)
 
-            if self.agent_config.simulator:
-                gs_norm_sim_losses.append(gs_norm_sim_loss.item())
-                time_sim_losses.append(time_sim_loss.item())
-            if self.agent_config.basis_stat_predictor:
-                for k, v in basis_stat_loss.items():
-                    basis_stat_losses[k].append(v.item())
+            if self.agent_config.auxiliary_predictor:
+                for k, v in auxiliary_predictor_loss.items():
+                    auxiliary_predictor_losses_dict[k].append(v.item())
 
         self.replay_buffer.empty()
 
@@ -721,101 +631,50 @@ class Agent(nn.Module):
             "update/advantages_std": advantages.std().item(),
             "update/clip_fraction": np.mean(clip_fractions),
         }
-        if self.agent_config.simulator:
-            metrics.update(
-                {
-                    "update/avg_gs_norm_sim_loss": np.mean(gs_norm_sim_losses),
-                    "update/avg_time_sim_loss": np.mean(time_sim_losses),
-                }
-            )
-        if self.agent_config.basis_stat_predictor:
-            for k, v in basis_stat_losses.items():
-                metrics[f"update/basis_stat_{k}"] = np.mean(v)
+        if self.agent_config.auxiliary_predictor:
+            for k, v in auxiliary_predictor_losses_dict.items():
+                metrics[f"update/auxiliary/{k}"] = np.mean(v)
 
         return metrics
 
-    def get_sim_loss(
+    def get_auxiliary_predictor_loss(
         self,
-        actions: torch.Tensor,
         states: torch.Tensor,
         next_states: torch.Tensor,
-        time_taken: torch.Tensor,
+        actions: torch.Tensor,
+        current_info: TensorDict[str, torch.Tensor],
+        next_info: TensorDict[str, torch.Tensor],
     ) -> Tuple[Dict[str, float], Dict[str, Any]]:
         current_features = self.actor_critic.preprocess_inputs(states)
         next_features = self.actor_critic.preprocess_inputs(next_states)
 
-        gs_norm_sim_loss = torch.full_like(
-            actions.float(), float("nan"), device=actions.device
-        )
-        time_sim_loss = torch.full_like(
-            actions.float(), float("nan"), device=actions.device
-        )
-
-        continue_mask = actions != 0
-        if continue_mask.any():
-            predicted_gs_norms, predicted_time, _ = self.simulator(
-                current_gs_norms=current_features["gs_norms"][continue_mask],
-                previous_action=current_features["last_action"][continue_mask],
-                basis_dim=current_features["basis_dim"][continue_mask],
-                current_action=actions[continue_mask].float(),
-                target_gs_norms=(
-                    next_features["gs_norms"][continue_mask]
-                    if self.agent_config.teacher_forcing
-                    else None
-                ),
-            )
-
-            gs_norm_sim_loss[continue_mask] = (
-                (predicted_gs_norms - next_features["gs_norms"][continue_mask]) ** 2
-            ).mean(dim=1)
-            time_sim_loss[continue_mask] = (
-                predicted_time - time_taken[continue_mask]
-            ) ** 2
-
         losses = {
-            "gs_norm_loss": gs_norm_sim_loss,
-            "time_loss": time_sim_loss,
-        }
-
-        raw_logs = {}
-        if continue_mask.any():
-            raw_logs = {
-                "gs_norm_predicted": predicted_gs_norms.detach().cpu().numpy(),
-                "gs_norm_target": next_features["gs_norms"][continue_mask].detach().cpu().numpy(),
-                "time_predicted": predicted_time.detach().cpu().numpy(),
-                "time_target": time_taken[continue_mask].detach().cpu().numpy(),
-            }
-        return losses, raw_logs
-
-    def get_basis_stat_pred_loss(
-        self,
-        states: torch.Tensor,
-        actions: torch.Tensor,
-        current_info: TensorDict[str, torch.Tensor],
-    ) -> Tuple[Dict[str, float], Dict[str, Any]]:
-        current_features = self.actor_critic.preprocess_inputs(states)
-
-        losses = {
-            "gs_losses": torch.full_like(
+            "simulated_gs_norms": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
-            "prev_act_losses": torch.full_like(
+            "simulated_time": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
-            "current_act_losses": torch.full_like(
+            "reconstructed_gs_norms": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
-            "log_defect_losses": torch.full_like(
+            "reconstructed_prev_action": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
-            "basis_dim_losses": torch.full_like(
+            "reconstructed_current_action": torch.full_like(
+                actions.float(), float("nan"), device=actions.device
+            ),
+            "reconstructed_log_defect": torch.full_like(
+                actions.float(), float("nan"), device=actions.device
+            ),
+            "reconstructed_basis_dim": torch.full_like(
                 actions.float(), float("nan"), device=actions.device
             ),
         }
 
         continue_mask = actions != 0
         if continue_mask.any():
-            preds, _ = self.basis_stat_predictor(
+            preds = self.auxiliary_predictor(
                 current_gs_norms=current_features["gs_norms"][continue_mask],
                 previous_action=current_features["last_action"][continue_mask],
                 current_action=actions[continue_mask].float(),
@@ -827,37 +686,54 @@ class Agent(nn.Module):
                 ),
             )
 
-            losses["gs_losses"][continue_mask] = (
-                (preds["gs_norms"] - current_features["gs_norms"][continue_mask]) ** 2
+            # simulation losses
+            losses["simulated_gs_norms"][continue_mask] = (
+                (preds["simulated_gs_norms"] - next_features["gs_norms"][continue_mask])
+                ** 2
             ).mean(dim=1)
-            losses["prev_act_losses"][continue_mask] = (
-                preds["previous_action"]
+            losses["simulated_time"][continue_mask] = (
+                preds["simulated_time"].exp() - next_info["time"][continue_mask].exp()
+            ) ** 2
+
+            # reconstruction losses
+            losses["reconstructed_gs_norms"][continue_mask] = (
+                (
+                    preds["reconstructed_gs_norms"]
+                    - current_features["gs_norms"][continue_mask]
+                )
+                ** 2
+            ).mean(dim=1)
+            losses["reconstructed_prev_action"][continue_mask] = (
+                preds["reconstructed_prev_action"]
                 - current_features["last_action"][continue_mask]
             ) ** 2
-            losses["current_act_losses"][continue_mask] = (
-                preds["current_action"] - actions[continue_mask].float()
+            losses["reconstructed_current_action"][continue_mask] = (
+                preds["reconstructed_current_action"] - actions[continue_mask].float()
             ) ** 2
-            losses["log_defect_losses"][continue_mask] = (
-                preds["log_defect"] - current_info["log_defect"][continue_mask].float()
+            losses["reconstructed_log_defect"][continue_mask] = (
+                preds["reconstructed_log_defect"]
+                - current_info["log_defect"][continue_mask].float()
             ) ** 2
-            losses["basis_dim_losses"][continue_mask] = (
-                preds["basis_dim"] - current_features["basis_dim"][continue_mask]
+            losses["reconstructed_basis_dim"][continue_mask] = (
+                preds["reconstructed_basis_dim"]
+                - current_features["basis_dim"][continue_mask]
             ) ** 2
 
         raw_logs = {}
         if continue_mask.any():
             raw_logs = {
-                "gs_norm_predicted": preds["gs_norms"].detach().cpu().numpy(),
-                "gs_norm_target": current_features["gs_norms"][continue_mask].detach().cpu().numpy(),
-                "prev_act_predicted": preds["previous_action"].detach().cpu().numpy(),
-                "prev_act_target": current_features["last_action"][continue_mask].detach().cpu().numpy(),
-                "current_act_predicted": preds["current_action"].detach().cpu().numpy(),
-                "current_act_target": actions.detach().cpu().numpy(),
-                "log_defect_predicted": preds["log_defect"].detach().cpu().numpy(),
-                "log_defect_target": current_info["log_defect"].detach().cpu().numpy(),
-                "basis_dim_predicted": preds["basis_dim"].detach().cpu().numpy(),
-                "basis_dim_target": current_features["basis_dim"].detach().cpu().numpy(),
+                "gs_norm_predicted": preds["reconstructed_gs_norms"].detach().cpu().tolist(),
+                "gs_norm_target": current_features["gs_norms"][continue_mask].detach().cpu().tolist(),
+                "prev_act_predicted": preds["reconstructed_prev_action"].detach().cpu().tolist(),
+                "prev_act_target": current_features["last_action"][continue_mask].detach().cpu().tolist(),
+                "current_act_predicted": preds["reconstructed_current_action"].detach().cpu().tolist(),
+                "current_act_target": actions[continue_mask].detach().cpu().tolist(),
+                "log_defect_predicted": preds["reconstructed_log_defect"].detach().cpu().tolist(),
+                "log_defect_target": current_info["log_defect"].detach().cpu().tolist(),
+                "basis_dim_predicted": preds["reconstructed_basis_dim"].detach().cpu().tolist(),
+                "basis_dim_target": current_features["basis_dim"].detach().cpu().tolist(),
             }
+            print(raw_logs)
 
         return losses, raw_logs
 
@@ -884,50 +760,23 @@ class Agent(nn.Module):
                 action
             )
             reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
-            if self.agent_config.simulator:
-                simulator_losses, _ = self.get_sim_loss(
-                    action,
-                    self.state,
-                    next_state,
-                    next_info["time"],
-                )
-                simulator_reward = (
-                    self.agent_config.simulator_reward_weight
-                    * torch.stack(
-                        [
-                            self.agent_config.simulator_config.gs_norm_weight
-                            * simulator_losses["gs_norm_loss"],
-                            self.agent_config.simulator_config.time_weight
-                            * simulator_losses["time_loss"],
-                        ],
-                        dim=0,
-                    ).sum(dim=0)
-                )
-                simulator_reward_ = torch.where(action == 0, 0, simulator_reward)
-                reward = reward + torch.clamp(simulator_reward_, max=10)
-            if self.agent_config.basis_stat_predictor:
-                basis_stat_pred_losses, _ = self.get_basis_stat_pred_loss(
+            if self.agent_config.auxiliary_predictor:
+                auxiliary_predictor_losses = self.get_auxiliary_predictor_loss(
                     states=self.state,
+                    next_states=next_state,
                     actions=action,
                     current_info=self.info,
+                    next_info=next_info,
                 )
-                basis_stat_pred_reward = (
-                    self.agent_config.basis_stat_predictor_reward_weight
+                auxiliary_reward = (
+                    self.agent_config.auxiliary_reward_weight
                     * torch.stack(
-                        [
-                            basis_stat_pred_losses["gs_losses"],
-                            basis_stat_pred_losses["prev_act_losses"],
-                            basis_stat_pred_losses["current_act_losses"],
-                            basis_stat_pred_losses["log_defect_losses"],
-                            basis_stat_pred_losses["basis_dim_losses"],
-                        ],
+                        [v for v in auxiliary_predictor_losses.values()],
                         dim=0,
                     ).sum(dim=0)
                 )
-                basis_stat_pred_reward_ = torch.where(
-                    action == 0, 0, basis_stat_pred_reward
-                )
-                reward = reward + torch.clamp(basis_stat_pred_reward_, max=10)
+                auxiliary_reward_ = torch.where(action == 0, 0, auxiliary_reward)
+                reward = reward + torch.clamp(auxiliary_reward_, max=10)
             done = terminated | truncated
 
             self.store_transition(
@@ -989,44 +838,19 @@ class Agent(nn.Module):
 
                 metrics.append(metric)
 
-            if self.agent_config.simulator:
+            if self.agent_config.auxiliary_predictor:
                 for i in range(reward.size(0)):
-                    metrics[i]["episode/simulator_reward"] = float(
-                        torch.clamp(simulator_reward[i], max=10)
+                    metrics[i]["episode/auxiliary_reward"] = float(
+                        torch.clamp(auxiliary_reward[i], max=10)
                     )
-                    metrics[i]["episode/simulator_reward_raw"] = float(
-                        simulator_reward[i]
-                    )
-                    metrics[i]["episode/simulator_gs_norm_loss"] = float(
-                        simulator_losses["gs_norm_loss"][i]
-                    )
-                    metrics[i]["episode/simulator_time_loss"] = float(
-                        simulator_losses["time_loss"][i]
+                    metrics[i]["episode/auxiliary_reward_raw"] = float(
+                        auxiliary_reward[i]
                     )
 
-            if self.agent_config.basis_stat_predictor:
-                for i in range(reward.size(0)):
-                    metrics[i]["episode/basis_stat_pred_reward"] = float(
-                        torch.clamp(basis_stat_pred_reward[i], max=10)
-                    )
-                    metrics[i]["episode/basis_stat_pred_reward_raw"] = float(
-                        basis_stat_pred_reward[i]
-                    )
-                    metrics[i]["episode/basis_stat_pred_gs_loss"] = float(
-                        basis_stat_pred_losses["gs_losses"][i]
-                    )
-                    metrics[i]["episode/basis_stat_pred_prev_act_loss"] = float(
-                        basis_stat_pred_losses["prev_act_losses"][i]
-                    )
-                    metrics[i]["episode/basis_stat_pred_current_act_loss"] = float(
-                        basis_stat_pred_losses["current_act_losses"][i]
-                    )
-                    metrics[i]["episode/basis_stat_pred_log_defect_loss"] = float(
-                        basis_stat_pred_losses["log_defect_losses"][i]
-                    )
-                    metrics[i]["episode/basis_stat_pred_basis_dim_loss"] = float(
-                        basis_stat_pred_losses["basis_dim_losses"][i]
-                    )
+                    for key in auxiliary_predictor_losses:
+                        metrics[i][f"episode/{key}_loss"] = float(
+                            auxiliary_predictor_losses[key][i].mean()
+                        )
 
             self.state = next_state
             self.info = next_info
@@ -1042,10 +866,8 @@ class Agent(nn.Module):
         shortest_length_history = [info["shortest_length"].item()]
         time_history = [info["time"].item()]
 
-        if self.agent_config.simulator:
-            sim_losses = defaultdict(list)
-        if self.agent_config.basis_stat_predictor:
-            basis_stat_pred_losses = defaultdict(list)
+        if self.agent_config.auxiliary_predictor:
+            auxiliary_predictor_losses_dict = defaultdict(list)
 
         done = False
         episode_reward = 0
@@ -1075,25 +897,16 @@ class Agent(nn.Module):
                 "continue_logits": continue_logits,
             })
 
-            if self.agent_config.simulator:
-                losses_, raw_logs = self.get_sim_loss(
-                    action,
-                    state,
-                    next_state,
-                    next_info["time"],
-                )
-                sim_losses["gs_norm_losses"].append(float(losses_["gs_norm_loss"]))
-                sim_losses["time_losses"].append(float(losses_["time_loss"]))
-                episode_logs[-1]["simulator_logs"] = raw_logs
-
-            if self.agent_config.basis_stat_predictor:
-                losses_, raw_logs = self.get_basis_stat_pred_loss(
+            if self.agent_config.auxiliary_predictor:
+                losses_, raw_logs = self.get_auxiliary_predictor_loss(
                     states=state,
+                    next_states=next_state,
                     actions=action,
                     current_info=info,
+                    next_info=next_info,
                 )
                 for k in losses_.keys():
-                    basis_stat_pred_losses[k].append(float(losses_[k]))
+                    auxiliary_predictor_losses_dict[k].append(float(losses_[k]))
                 episode_logs[-1]["basis_stat_pred"] = raw_logs
 
             state = next_state
@@ -1117,13 +930,10 @@ class Agent(nn.Module):
             "gh": float(batch["gaussian_heuristic"]),
         }
 
-        if self.agent_config.simulator:
-            for k in sim_losses:
-                metrics["sim/" + k] = float(np.nanmean(sim_losses[k]))
-        if self.agent_config.basis_stat_predictor:
-            for k in basis_stat_pred_losses:
-                metrics["basis_stat_pred/" + k] = float(
-                    np.nanmean(basis_stat_pred_losses[k])
+        if self.agent_config.auxiliary_predictor:
+            for k in auxiliary_predictor_losses_dict:
+                metrics["auxiliary/" + k] = float(
+                    np.nanmean(auxiliary_predictor_losses_dict[k])
                 )
 
         metrics.update(episode_rewards)
