@@ -298,15 +298,18 @@ class ActionEncoder(nn.Module):
         self,
         max_basis_dim: int,
         embedding_dim: int,
+        hidden_dim: int = 128,
     ) -> None:
         super().__init__()
 
         self.max_basis_dim = max_basis_dim
         self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
 
         self.encoder = nn.Sequential(
-            nn.Linear(2, self.embedding_dim),
+            nn.Linear(2, self.hidden_dim),
             nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.embedding_dim),
         )
 
     def forward(
