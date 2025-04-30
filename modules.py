@@ -205,16 +205,16 @@ class GSNormDecoder(nn.Module):
         basis_dim: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        prev_action_embedding = prev_action_embedding.expand(
+        prev_action_embedding = prev_action_embedding.unsqueeze(1).expand(
             -1, gs_norms_embedding.size(1), -1
         )
-        current_action_embedding = current_action_embedding.expand(
+        current_action_embedding = current_action_embedding.unsqueeze(1).expand(
             -1, gs_norms_embedding.size(1), -1
         )
 
         # buffers for storing generated output
         simulated_gs_norms = torch.zeros(
-            (gs_norms_embedding.size(0), gs_norms_embedding.size(1)),
+            (gs_norms_embedding.size(0), gs_norms_embedding.size(1) - 1),
             device=device,
         )
         generated_sequence = self.bos_token.expand(gs_norms_embedding.size(0), 1)
@@ -261,7 +261,7 @@ class GSNormDecoder(nn.Module):
                     dim=1,
                 )
 
-        return predicted_gs_norm
+        return simulated_gs_norms
 
     def _teacher_forced_generation(
         self,
