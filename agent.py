@@ -862,7 +862,7 @@ class Agent(nn.Module):
             state = state.to(self.device)
             info = info.to(self.device)
 
-            action, _, _, _ = self.get_action(state)
+            action, _, _, _, _ = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
             log_defect_history.append(next_info["log_defect"].item())
@@ -876,8 +876,10 @@ class Agent(nn.Module):
             if self.agent_config.auxiliary_predictor:
                 losses_ = self.get_auxiliary_predictor_loss(
                     states=state,
+                    next_states=next_state,
                     actions=action,
                     current_info=info,
+                    next_info=next_info,
                 )
                 for k in losses_.keys():
                     auxiliary_predictor_losses_dict[k].append(float(losses_[k]))
