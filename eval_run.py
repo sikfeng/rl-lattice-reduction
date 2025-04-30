@@ -70,28 +70,35 @@ def main():
 
     dist_group = parser.add_mutually_exclusive_group(required=True)
     dist_group.add_argument(
-        "--uniform", action="store_true", help="Use a uniform distribution."
+        "--uniform",
+        action="store_const",
+        const="uniform",
+        dest="dist",
+        help="Use a uniform distribution.",
     )
     dist_group.add_argument(
-        "--qary", action="store_true", help="Use a q-ary distribution."
+        "--qary",
+        action="store_const",
+        const="qary",
+        dest="dist",
+        help="Use a q-ary distribution.",
     )
     dist_group.add_argument(
-        "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
+        "--ntrulike",
+        action="store_const",
+        const="ntrulike",
+        dest="dist",
+        help="Use an NTRU-like distribution.",
     )
     dist_group.add_argument(
-        "--knapsack", action="store_true", help="Use a knapsack distribution."
+        "--knapsack",
+        action="store_const",
+        const="knapsack",
+        dest="dist",
+        help="Use a knapsack distribution.",
     )
 
     args = parser.parse_args()
-
-    if args.uniform:
-        args.dist = "uniform"
-    elif args.qary:
-        args.dist = "qary"
-    elif args.ntrulike:
-        args.dist = "ntrulike"
-    elif args.knapsack:
-        args.dist = "knapsack"
 
     random.seed(args.seed)
     np.random.seed(args.seed)

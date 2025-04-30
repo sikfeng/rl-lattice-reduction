@@ -69,16 +69,32 @@ def main():
 
     dist_args = env_args.add_mutually_exclusive_group(required=True)
     dist_args.add_argument(
-        "--uniform", action="store_true", help="Use a uniform distribution."
+        "--uniform",
+        action="store_const",
+        const="uniform",
+        dest="dist",
+        help="Use a uniform distribution.",
     )
     dist_args.add_argument(
-        "--qary", action="store_true", help="Use a q-ary distribution."
+        "--qary",
+        action="store_const",
+        const="qary",
+        dest="dist",
+        help="Use a q-ary distribution.",
     )
     dist_args.add_argument(
-        "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
+        "--ntrulike",
+        action="store_const",
+        const="ntrulike",
+        dest="dist",
+        help="Use an NTRU-like distribution.",
     )
     dist_args.add_argument(
-        "--knapsack", action="store_true", help="Use a knapsack distribution."
+        "--knapsack",
+        action="store_const",
+        const="knapsack",
+        dest="dist",
+        help="Use a knapsack distribution.",
     )
 
     arch_args = parser.add_argument_group("Architecture Settings")
@@ -103,14 +119,24 @@ def main():
 
     policy_args = arch_args.add_mutually_exclusive_group(required=True)
     policy_args.add_argument(
-        "--continuous", action="store_true", help="Use continuous prediction policy."
+        "--continuous",
+        action="store_const",
+        const="continuous",
+        dest="policy_type",
+        help="Use continuous prediction policy.",
     )
     policy_args.add_argument(
-        "--discrete", action="store_true", help="Use discrete prediction policy."
+        "--discrete",
+        action="store_const",
+        const="discrete",
+        dest="policy_type",
+        help="Use discrete prediction policy.",
     )
     policy_args.add_argument(
         "--joint-energy",
-        action="store_true",
+        action="store_const",
+        const="discrete",
+        dest="policy_type",
         help="Use joint energy-based prediction policy.",
     )
 
@@ -205,23 +231,6 @@ def main():
         raise ValueError("max_block_size must be at most dim.")
     if 2 > args.max_block_size:
         raise ValueError("max_block_size cannot be less than 2.")
-
-    if args.uniform:
-        args.dist = "uniform"
-    elif args.qary:
-        args.dist = "qary"
-    elif args.ntrulike:
-        args.dist = "ntrulike"
-    elif args.knapsack:
-        args.dist = "knapsack"
-
-    # Determine selected prediction type
-    if args.continuous:
-        args.policy_type = "continuous"
-    elif args.discrete:
-        args.policy_type = "discrete"
-    elif args.joint_energy:
-        args.policy_type = "joint-energy"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
