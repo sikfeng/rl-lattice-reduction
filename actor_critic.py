@@ -197,7 +197,6 @@ class ActorCritic(nn.Module):
         gs_norms_embedding_hidden_dim: int = 128,
         action_embedding_dim: int = 8,
         actor_hidden_dim: int = 128,
-        normalize_gs_norms: bool = False,
     ) -> None:
         super().__init__()
         self.policy_type = policy_type
@@ -208,13 +207,10 @@ class ActorCritic(nn.Module):
         self.action_embedding_dim = action_embedding_dim
         self.dropout_p = dropout_p
 
-        self.normalize_gs_norms = normalize_gs_norms
-
         self.gs_norms_encoder = GSNormEncoder(
             dropout_p=self.dropout_p,
             max_basis_dim=self.max_basis_dim,
             hidden_dim=self.gs_norms_embedding_hidden_dim,
-            normalize_inputs=self.normalize_gs_norms,
         )
         self.action_encoder = ActionEncoder(
             max_basis_dim=self.max_basis_dim,

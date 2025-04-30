@@ -33,7 +33,6 @@ class BasisStatPredictor(nn.Module):
         hidden_dim: int = 128,
         device: Union[torch.device, str] = "cpu",
         teacher_forcing: bool = False,
-        normalize_gs_norms: bool = False,
     ) -> None:
         super().__init__()
 
@@ -43,13 +42,11 @@ class BasisStatPredictor(nn.Module):
         self.hidden_dim = hidden_dim
         self.device = device
         self.teacher_forcing = teacher_forcing
-        self.normalize_gs_norms = normalize_gs_norms
 
         self.gs_norms_decoder = GSNormDecoder(
             gs_norms_encoder=self.gs_norms_encoder,
             input_dim=self.gs_norms_encoder.hidden_dim
             + 2 * self.action_encoder.embedding_dim,
-            normalize_inputs=self.normalize_gs_norms,
         )
         self.previous_action_predictor = nn.Sequential(
             nn.Linear(

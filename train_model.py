@@ -106,11 +106,6 @@ def main():
         required=True,
         help="Maximum input dimension for neural network architecture.",
     )
-    arch_args.add_argument(
-        "--normalize-gs-norms",
-        action="store_true",
-        help="Whether the GSNormEncoder should normalize Gram-Schmidt normss.",
-    )
 
     policy_args = arch_args.add_mutually_exclusive_group(required=True)
     policy_args.add_argument(
@@ -336,7 +331,6 @@ def main():
         basis_stat_predictor_reward_weight=args.basis_stats_reward_weight,
         simulator_config=simulator_config,
         basis_stat_predictor_config=basis_stat_predictor_config,
-        normalize_gs_norms=args.normalize_gs_norms,
     )
     agent = Agent(agent_config=agent_config).to(device)
 

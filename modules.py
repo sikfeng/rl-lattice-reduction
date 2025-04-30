@@ -41,14 +41,12 @@ class GSNormEncoder(nn.Module):
         dropout_p: float,
         max_basis_dim: int,
         hidden_dim: int,
-        normalize_inputs: bool = False,
     ) -> None:
         super().__init__()
 
         self.max_basis_dim = max_basis_dim
         self.dropout_p = dropout_p
         self.hidden_dim = hidden_dim
-        self.normalize_inputs = normalize_inputs
 
         # Learnable CLS token
         self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
@@ -85,13 +83,6 @@ class GSNormEncoder(nn.Module):
         gs_norms: torch.Tensor,
         pad_mask: torch.Tensor,
     ) -> torch.Tensor:
-        if self.normalize_inputs:
-            # the GS norms provided are log-transformed
-            # hence should do a linear shift
-            gs_norms[~pad_mask[:, 1:]] = gs_norms[~pad_mask[:, 1:]] - gs_norms[
-                ~pad_mask[:, 1:]
-            ].mean(dim=-1, keepdim=True)
-
         x = self.input_projection(gs_norms)
 
         cls_tokens = self.cls_token.expand(gs_norms.size(0), -1, -1)
@@ -127,7 +118,6 @@ class GSNormDecoder(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         dropout_p: float = 0.1,
-        normalize_inputs: bool = False,
     ):
         super().__init__()
 
@@ -135,7 +125,6 @@ class GSNormDecoder(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.dropout_p = dropout_p
-        self.normalize_inputs = normalize_inputs
 
         self.bos_token = nn.Parameter(torch.randn(1, 1))
         decoder_layer = nn.TransformerDecoderLayer(
@@ -187,15 +176,6 @@ class GSNormDecoder(nn.Module):
 
         pad_mask = self._generate_pad_mask(basis_dim)
         predicted_gs_norms[pad_mask] = 0
-        if self.normalize_inputs:
-            pad_mask = self._generate_pad_mask(basis_dim)
-            # the GS norms provided are log-transformed
-            # hence should do a linear shift
-
-            # note that this normalization on the log-transformed norms actually corresponds to dividing the GS norms by their geometric mean
-            predicted_gs_norms[~pad_mask] = predicted_gs_norms[
-                ~pad_mask
-            ] - predicted_gs_norms[~pad_mask].mean(dim=-1, keepdim=True)
         return predicted_gs_norms
 
     def _generate_pad_mask(
