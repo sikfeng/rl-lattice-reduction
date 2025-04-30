@@ -371,7 +371,7 @@ class Agent(nn.Module):
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
             if self.agent_config.auxiliary_predictor:
-                auxiliary_predictor_losses = self.get_auxiliary_predictor_loss(
+                auxiliary_predictor_losses, _ = self.get_auxiliary_predictor_loss(
                     states=states,
                     next_states=next_states,
                     actions=actions,
@@ -784,7 +784,7 @@ class Agent(nn.Module):
             )
             reward = torch.stack(list(rewards.values()), dim=0).sum(dim=0)
             if self.agent_config.auxiliary_predictor:
-                auxiliary_predictor_losses = self.get_auxiliary_predictor_loss(
+                auxiliary_predictor_losses, _ = self.get_auxiliary_predictor_loss(
                     states=self.state,
                     next_states=next_state,
                     actions=action,
