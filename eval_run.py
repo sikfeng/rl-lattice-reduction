@@ -206,7 +206,7 @@ def main():
         logging.info(f"Validation metrics:")
         logging.info(str(avg_metrics))
         log_data["avg_metrics"] = avg_metrics
-        log_data["raw_logs"] = str(aggregated_raw_logs)
+        log_data["raw_logs"] = aggregated_raw_logs
 
         with open(json_filename, "w") as json_file:
             json.dump(log_data, json_file, indent=4, sort_keys=False)

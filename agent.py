@@ -912,15 +912,16 @@ class Agent(nn.Module):
 
             episode_logs.append(
                 {
-                    "action": int(action),
-                    "reward": reward,
-                    "termination_prob": float(termination_prob),
-                    "continue_logits": continue_logits,
+                    "step": steps,
+                    "action": int(action.squeeze()),
+                    "reward": {k: v.squeeze().detach().cpu().tolist() for k, v in reward.items()},
+                    "termination_prob": float(termination_prob.squeeze()),
+                    "continue_logits": continue_logits.squeeze().detach().cpu().tolist(),
                 }
             )
 
             if self.agent_config.auxiliary_predictor:
-                losses_, raw_logs = self.get_auxiliary_predictor_loss(
+                losses_, auxiliary_raw_logs = self.get_auxiliary_predictor_loss(
                     states=state,
                     next_states=next_state,
                     actions=action,
@@ -929,7 +930,7 @@ class Agent(nn.Module):
                 )
                 for k in losses_.keys():
                     auxiliary_predictor_losses_dict[k].append(float(losses_[k]))
-                episode_logs[-1]["basis_stat_pred"] = raw_logs
+                episode_logs[-1]["auxiliary"] = auxiliary_raw_logs
 
             state = next_state
             info = next_info
