@@ -673,90 +673,89 @@ class Agent(nn.Module):
         }
 
         continue_mask = actions != 0
+        raw_logs = {}
         if continue_mask.any():
             preds = self.auxiliary_predictor(
-                current_gs_norms=current_features["gs_norms"][continue_mask],
-                previous_action=current_features["last_action"][continue_mask],
-                current_action=actions[continue_mask].float(),
-                basis_dim=current_features["basis_dim"][continue_mask],
+                current_gs_norms=current_features["gs_norms"],
+                previous_action=current_features["last_action"],
+                current_action=actions.float(),
+                basis_dim=current_features["basis_dim"],
                 target_gs_norms=(
-                    current_features["gs_norms"][continue_mask]
+                    current_features["gs_norms"]
                     if self.agent_config.teacher_forcing
                     else None
                 ),
             )
 
             # simulation losses
-            losses["simulated_gs_norms"][continue_mask] = (
-                (preds["simulated_gs_norms"] - next_features["gs_norms"][continue_mask])
-                ** 2
+            losses["simulated_gs_norms"] = (
+                (preds["simulated_gs_norms"] - next_features["gs_norms"]) ** 2
             ).mean(dim=1)
-            losses["simulated_time"][continue_mask] = (
-                preds["simulated_time"].exp() - next_info["time"][continue_mask].exp()
+            losses["simulated_time"] = (
+                preds["simulated_time"].exp() - next_info["time"].exp()
             ) ** 2
 
             # reconstruction losses
-            losses["reconstructed_gs_norms"][continue_mask] = (
-                (
-                    preds["reconstructed_gs_norms"]
-                    - current_features["gs_norms"][continue_mask]
-                )
-                ** 2
+            losses["reconstructed_gs_norms"] = (
+                (preds["reconstructed_gs_norms"] - current_features["gs_norms"]) ** 2
             ).mean(dim=1)
-            losses["reconstructed_prev_action"][continue_mask] = (
-                preds["reconstructed_prev_action"]
-                - current_features["last_action"][continue_mask]
+            losses["reconstructed_prev_action"] = (
+                preds["reconstructed_prev_action"] - current_features["last_action"]
             ) ** 2
-            losses["reconstructed_current_action"][continue_mask] = (
-                preds["reconstructed_current_action"] - actions[continue_mask].float()
+            losses["reconstructed_current_action"] = (
+                preds["reconstructed_current_action"] - actions.float()
             ) ** 2
-            losses["reconstructed_log_defect"][continue_mask] = (
-                preds["reconstructed_log_defect"]
-                - current_info["log_defect"][continue_mask].float()
+            losses["reconstructed_log_defect"] = (
+                preds["reconstructed_log_defect"] - current_info["log_defect"].float()
             ) ** 2
-            losses["reconstructed_basis_dim"][continue_mask] = (
-                preds["reconstructed_basis_dim"]
-                - current_features["basis_dim"][continue_mask]
+            losses["reconstructed_basis_dim"] = (
+                preds["reconstructed_basis_dim"] - current_features["basis_dim"]
             ) ** 2
 
-        raw_logs = {}
-        if continue_mask.any():
-            raw_logs = {
-                "gs_norm_predicted": preds["reconstructed_gs_norms"]
-                .detach()
-                .cpu()
-                .tolist(),
-                "gs_norm_target": current_features["gs_norms"][continue_mask]
-                .detach()
-                .cpu()
-                .tolist(),
-                "prev_act_predicted": preds["reconstructed_prev_action"]
-                .detach()
-                .cpu()
-                .tolist(),
-                "prev_act_target": current_features["last_action"][continue_mask]
-                .detach()
-                .cpu()
-                .tolist(),
-                "current_act_predicted": preds["reconstructed_current_action"]
-                .detach()
-                .cpu()
-                .tolist(),
-                "current_act_target": actions[continue_mask].detach().cpu().tolist(),
-                "log_defect_predicted": preds["reconstructed_log_defect"]
-                .detach()
-                .cpu()
-                .tolist(),
-                "log_defect_target": current_info["log_defect"].detach().cpu().tolist(),
-                "basis_dim_predicted": preds["reconstructed_basis_dim"]
-                .detach()
-                .cpu()
-                .tolist(),
-                "basis_dim_target": current_features["basis_dim"]
-                .detach()
-                .cpu()
-                .tolist(),
-            }
+            # logging raw prediction and target values
+            raw_logs["simulated_gs_norms"] = (
+                preds["simulated_gs_norms"].detach().cpu().tolist()
+            )
+            raw_logs["simulated_gs_norms_target"] = (
+                next_features["gs_norms"].detach().cpu().tolist()
+            )
+            raw_logs["simulated_time"] = (
+                preds["simulated_time"].detach().cpu().tolist()
+            )
+            raw_logs["simulated_time_target"] = (
+                next_info["time"].detach().cpu().tolist()
+            )
+
+            raw_logs["reconstructed_gs_norms"] = (
+                preds["reconstructed_gs_norms"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_gs_norms_target"] = (
+                current_features["gs_norms"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_prev_action"] = (
+                preds["reconstructed_prev_action"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_prev_action_target"] = (
+                current_features["last_action"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_current_action"] = (
+                preds["reconstructed_current_action"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_current_action_target"] = (
+                actions.detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_log_defect"] = (
+                preds["reconstructed_log_defect"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_log_defect_target"] = (
+                current_info["log_defect"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_basis_dim"] = (
+                preds["reconstructed_basis_dim"].detach().cpu().tolist()
+            )
+            raw_logs["reconstructed_basis_dim_target"] = (
+                current_features["basis_dim"].detach().cpu().tolist()
+            )
 
         return losses, raw_logs
 
