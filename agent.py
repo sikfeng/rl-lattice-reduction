@@ -719,9 +719,7 @@ class Agent(nn.Module):
             raw_logs["simulated_gs_norms_target"] = (
                 next_features["gs_norms"].detach().cpu().tolist()
             )
-            raw_logs["simulated_time"] = (
-                preds["simulated_time"].detach().cpu().tolist()
-            )
+            raw_logs["simulated_time"] = preds["simulated_time"].detach().cpu().tolist()
             raw_logs["simulated_time_target"] = (
                 next_info["time"].detach().cpu().tolist()
             )
@@ -955,10 +953,12 @@ class Agent(nn.Module):
         }
 
         if self.agent_config.auxiliary_predictor:
-            for k in auxiliary_predictor_losses_dict:
-                metrics["auxiliary/" + k] = float(
-                    np.nanmean(auxiliary_predictor_losses_dict[k])
+            auxiliary_metrics = {}
+            for auxiliary_metric in auxiliary_predictor_losses_dict:
+                auxiliary_metrics[f"{auxiliary_metric}_loss"] = float(
+                    np.nanmean(auxiliary_predictor_losses_dict[auxiliary_metric])
                 )
+            metrics["auxiliary"] = auxiliary_metrics
 
         metrics.update(episode_rewards)
 

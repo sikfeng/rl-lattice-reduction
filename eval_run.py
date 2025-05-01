@@ -3,7 +3,7 @@ from collections import defaultdict
 import logging
 from pathlib import Path
 import random
-from typing import Dict
+from typing import Any, Dict, List
 import yaml
 
 from fpylll import FPLLL
@@ -17,47 +17,68 @@ from agent import Agent
 from load_dataset import load_lattice_dataloader
 
 
+from collections import defaultdict
+import copy
+
+
+def transpose_list_of_dicts(dicts: List[Dict[str, Any]]) -> Dict[str, List[Any]]:
+    result = defaultdict(list)
+    for d in dicts:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                result[k].append(v)
+            else:
+                result[k].append(copy.deepcopy(v))
+
+    for k in result:
+        if isinstance(result[k][0], dict):
+            result[k] = transpose_list_of_dicts(result[k])
+        elif all(isinstance(i, list) for i in result[k]):
+            result[k] = [item for sublist in result[k] for item in sublist]
+    return dict(result)
+
+
+def recursive_mean(d: Dict[str, Any]) -> Dict[str, Any]:
+    result = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            result[k] = recursive_mean(v)
+        elif isinstance(v, list):
+            result[k] = float(np.nanmean((v)))
+        else:
+            raise ValueError(f"Expected list or dict at key '{k}', got {type(v)}")
+    return result
+
+
 def evaluate(
-    agent: Agent, val_dataloader: DataLoader, checkpoint_episode: int, dim: int
-) -> Dict[str, float]:
-    aggregated_metrics = defaultdict(list)
+    agent: Agent,
+    dataloader: DataLoader,
+    checkpoint_episode: int,
+) -> Dict[str, Any]:
+    aggregated_metrics = []
+    aggregated_raw_logs = []
 
     with torch.no_grad():
-        for episode_index, batch in enumerate(
+        for index, batch in enumerate(
             tqdm(
-                val_dataloader,
+                dataloader,
                 dynamic_ncols=True,
                 desc=f"Validating Checkpoint {checkpoint_episode}",
             )
         ):
             batch_metrics, episode_logs = agent.evaluate(batch)
+            aggregated_metrics.append(batch_metrics)
+            aggregated_raw_logs.append(episode_logs)
 
-            per_batch_log = {
-                f"dim_{dim}/{metric}_{checkpoint_episode}": value
-                for metric, value in batch_metrics.items()
-            }
-            per_batch_log["episode"] = episode_index
-            wandb.log(per_batch_log)
+            wandb.log({**batch_metrics, "index": index})
+            wandb.log({"raw_val_logs": episode_logs})
 
-            wandb.log({"dim_{dim}/raw_episode_logs": episode_logs})
-
-            for metric, value in batch_metrics.items():
-                aggregated_metrics[metric].append(value)
-
-        avg_metrics = {
-            f"avg_{metric}": sum(values) / len(values)
-            for metric, values in aggregated_metrics.items()
-        }
-
-        final_log = {
-            f"dim_{dim}/{metric}": value for metric, value in avg_metrics.items()
-        }
-        final_log["checkpoint_episode"] = checkpoint_episode
-        wandb.log(final_log)
-
+        aggregated_metrics = transpose_list_of_dicts(aggregated_metrics)
+        avg_metrics = recursive_mean(aggregated_metrics)
         avg_metrics["checkpoint_episode"] = checkpoint_episode
+        wandb.log(avg_metrics)
 
-        return avg_metrics
+        return avg_metrics, aggregated_raw_logs
 
 
 def main():
@@ -157,10 +178,9 @@ def main():
 
     # Process each checkpoint in order
     for checkpoint_episode, pth_file in checkpoint_files:
-        yaml_filename = f"episode_{checkpoint_episode}.yaml"
-        yaml_file = reports_dir / yaml_filename
-        if yaml_file.exists():
-            logging.info(f"Skipping {pth_file} as {yaml_file} exists.")
+        yaml_filename = reports_dir / f"episode_{checkpoint_episode}.yaml"
+        if yaml_filename.exists():
+            logging.info(f"Skipping {pth_file} as {yaml_filename} exists.")
             continue
 
         logging.info(f"Evaluating {pth_file}...")
@@ -179,14 +199,19 @@ def main():
         total_params = sum(p.numel() for p in agent.parameters())
         logging.info(f"Total parameters: {total_params}")
 
-        metrics = evaluate(agent, val_loader, checkpoint_episode, args.dim)
+        log_data = {}
+        log_data["agent_config"] = str(agent_config)
+
+        avg_metrics, aggregated_raw_logs = evaluate(agent, val_loader, checkpoint_episode)
         logging.info(f"Validation metrics:")
-        logging.info(str(metrics))
+        logging.info(str(avg_metrics))
+        log_data["avg_metrics"] = avg_metrics
+        log_data["raw_logs"] = str(aggregated_raw_logs)
 
-        with open(yaml_file, "w") as f:
-            yaml.safe_dump(metrics, f, sort_keys=False)
+        with open(yaml_filename, "w") as yaml_file:
+            yaml.safe_dump(log_data, yaml_file, sort_keys=False)
 
-        logging.info(f"Saved metrics to {yaml_file}")
+        logging.info(f"Saved logs to {yaml_filename}")
 
 
 if __name__ == "__main__":
