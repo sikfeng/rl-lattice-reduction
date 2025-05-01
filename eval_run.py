@@ -122,7 +122,7 @@ def main():
         logging.info("No GPU available, using the CPU instead.")
         device = torch.device("cpu")
 
-    run_id = f"{Path(args.run_dir).name}/dim_{args.dim}_dist_{args.dist}"
+    run_id = f"{Path(args.run_dir).name}/dim_{args.dim}-dist_{args.dist}"
     wandb.init(project="bkz-rl-evaluation", name=run_id)
 
     data_dir = Path("random_bases")
@@ -141,7 +141,7 @@ def main():
 
     # Create reports directory if it doesn't exist
     reports_dir = run_dir / "reports" / f"dim_{args.dim}-dist_{args.dist}"
-    reports_dir.mkdir(exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint_files = []
 
