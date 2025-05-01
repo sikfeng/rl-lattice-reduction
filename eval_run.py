@@ -1,10 +1,10 @@
 import argparse
 from collections import defaultdict
+import json
 import logging
 from pathlib import Path
 import random
 from typing import Any, Dict, List
-import yaml
 
 from fpylll import FPLLL
 import numpy as np
@@ -178,9 +178,9 @@ def main():
 
     # Process each checkpoint in order
     for checkpoint_episode, pth_file in checkpoint_files:
-        yaml_filename = reports_dir / f"episode_{checkpoint_episode}.yaml"
-        if yaml_filename.exists():
-            logging.info(f"Skipping {pth_file} as {yaml_filename} exists.")
+        json_filename = reports_dir / f"episode_{checkpoint_episode}.json"
+        if json_filename.exists():
+            logging.info(f"Skipping {pth_file} as {json_filename} exists.")
             continue
 
         logging.info(f"Evaluating {pth_file}...")
@@ -208,10 +208,10 @@ def main():
         log_data["avg_metrics"] = avg_metrics
         log_data["raw_logs"] = str(aggregated_raw_logs)
 
-        with open(yaml_filename, "w") as yaml_file:
-            yaml.safe_dump(log_data, yaml_file, sort_keys=False)
+        with open(json_filename, "w") as json_file:
+            json.dump(log_data, json_file, indent=4, sort_keys=False)
 
-        logging.info(f"Saved logs to {yaml_filename}")
+        logging.info(f"Saved logs to {json_filename}")
 
 
 if __name__ == "__main__":
