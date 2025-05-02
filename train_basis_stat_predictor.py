@@ -11,8 +11,6 @@ from tqdm import tqdm
 import wandb
 
 from reduction_env import ReductionEnvConfig
-from basis_stat_trainer import BasisStatTrainer
-
 
 def parse_args() -> argparse.Namespace:
     """Parses and returns command-line arguments."""

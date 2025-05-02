@@ -4,11 +4,12 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 import random
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import fpylll
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
 import numpy as np
+import torch
 from tqdm import tqdm
 
 
@@ -71,17 +72,13 @@ def gaussian_heuristic(basis: np.ndarray) -> float:
     Returns:
         float: The length of the shortest vector predicted by the Gaussian Heuristic.
     """
-    B = IntegerMatrix.from_matrix(basis)
-    M = GSO.Mat(B)
-    M.update_gso()
+    basis_ = np.array(basis, dtype=float)
+    _, R = np.linalg.qr(basis_)
+    diag = np.abs(np.diagonal(R, axis1=-2, axis2=-1))
+    n = diag.shape[0]
 
-    # Get the squared norms of the Gram-Schmidt vectors
-    gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
-
-    # Calculate the Gaussian Heuristic
-    gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
-
-    return math.sqrt(gh_squared)
+    log_gh = np.sum(np.log(diag)) / n - np.log(np.pi) / 2 - math.lgamma(n / 2 + 1) / n
+    return np.exp(log_gh)
 
 
 def generate_uniform(n: int, b: int) -> Tuple[np.ndarray, int]:
@@ -109,20 +106,20 @@ def generate_ntrulike(n: int, q: int) -> Tuple[np.ndarray, int]:
     return np_basis, -1
 
 
-def generate_knapsack(n: int, b: int) -> Tuple[np.ndarray, int]:
+def generate_knapsack(n: int, b: int) -> Tuple[List[List[int]], int]:
     # return random knapsack basis and the shortest basis length
     # (assuming that it is the basis representing the subset sum for the last row)
     basis = IntegerMatrix.random(n - 1, "intrel", bits=b)
-    np_basis = np.zeros((n, n), dtype=int)
-    basis.to_matrix(np_basis)
+    basis_ = np.zeros((n, n), dtype=int).tolist()
+    basis.to_matrix(basis_)
 
     subset_size = random.randint(1, n - 2)
     elements = random.sample(range(n - 1), subset_size)
 
     for e in elements:
-        np_basis[n - 1][0] += np_basis[e][0]
+        basis_[n - 1][0] += basis_[e][0]
 
-    return np_basis, np.sqrt(subset_size)
+    return basis_, np.sqrt(subset_size)
 
 
 def func(_, n: int, distribution: str) -> Dict[str, Any]:
@@ -139,10 +136,10 @@ def func(_, n: int, distribution: str) -> Dict[str, Any]:
             elif distribution == "ntrulike":
                 basis, tgt = generate_ntrulike(n, q=11887)
             elif distribution == "knapsack":
-                basis, tgt = generate_knapsack(n, b=13)
+                basis, tgt = generate_knapsack(n, b=n)
 
             # Calculate the length of the shortest basis vector in the original basis
-            original_basis_vector_lengths = np.linalg.norm(basis, axis=1)
+            original_basis_vector_lengths = np.linalg.norm(np.array(basis, dtype=float), axis=1)
             shortest_original_basis_vector_length = np.min(
                 original_basis_vector_lengths
             )
@@ -157,7 +154,8 @@ def func(_, n: int, distribution: str) -> Dict[str, Any]:
                 "gaussian_heuristic": gh,
                 "target_length": tgt / gh if tgt != -1 else -1,
             }
-        except (ReductionError, ValueError, RuntimeError) as e:
+        #except (ReductionError, ValueError, RuntimeError) as e:
+        except KeyboardInterrupt:
             continue
 
 

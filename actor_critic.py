@@ -117,7 +117,7 @@ class DiscretePolicyHead(nn.Module):
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
-        valid_mask = (indices >= previous_action_) & (indices <= basis_dim_)
+        valid_mask = (indices >= previous_action_ + 1) & (indices <= basis_dim_)
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
 
         return termination_logit, masked_logits

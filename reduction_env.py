@@ -375,7 +375,11 @@ class ReductionEnvironment:
             block_size = self._action_to_block(action)
             self.clean = self.bkz.tour(
                 BKZ.EasyParam(
-                    block_size=block_size, max_loops=1, gh_factor=1.1, auto_abort=True
+                    block_size=block_size,
+                    max_loops=1,
+                    gh_factor=1.1,
+                    auto_abort=True,
+                    strategies=None,
                 ),
                 tracer=self.tracer,
             )
@@ -391,6 +395,7 @@ class ReductionEnvironment:
         rewards = self._compute_reward()
         info = self._get_info()
         done = self.terminated or self.truncated
+        print(self.action_history)
 
         if done:
             obs, info = self.reset()
@@ -460,16 +465,16 @@ class ReductionEnvironment:
 
     @staticmethod
     def gaussian_heuristic(basis: IntegerMatrix) -> float:
-        M = GSO.Mat(basis)
-        M.update_gso()
+        basis_ = np.zeros((basis.ncols, basis.ncols), dtype=float)
+        for i in range(basis.nrows):
+            for j in range(basis.ncols):
+                basis_[i, j] = basis[i, j]
+        _, R = np.linalg.qr(basis_)
+        diag = np.abs(np.diagonal(R, axis1=-2, axis2=-1))
+        n = diag.shape[0]
 
-        # Get the squared norms of the Gram-Schmidt vectors
-        gs_norms_squared = [M.get_r(i, i) for i in range(M.d)]
-
-        # Calculate the Gaussian Heuristic
-        gh_squared = fpylll.util.gaussian_heuristic(gs_norms_squared)
-
-        return math.sqrt(gh_squared)
+        log_gh = np.sum(np.log(diag)) / n - np.log(np.pi) / 2 - math.lgamma(n / 2 + 1) / n
+        return np.exp(log_gh)
 
     @staticmethod
     def compute_log_defect(basis: IntegerMatrix) -> float:
