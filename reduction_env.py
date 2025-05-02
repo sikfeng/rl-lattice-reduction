@@ -395,7 +395,6 @@ class ReductionEnvironment:
         rewards = self._compute_reward()
         info = self._get_info()
         done = self.terminated or self.truncated
-        print(self.action_history)
 
         if done:
             obs, info = self.reset()
