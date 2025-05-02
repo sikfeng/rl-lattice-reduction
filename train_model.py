@@ -248,7 +248,7 @@ def main():
     else:
         start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
         run_name = f"dim-{args.net_dim}_{args.train_min_dim}_{args.train_max_dim}_{start_timestamp}"
-        checkpoint_dir = Path(f"checkpoint/{run_name}")
+        checkpoint_dir = Path(f"checkpoints/{run_name}")
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
