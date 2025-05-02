@@ -212,6 +212,7 @@ def main():
             json.dump(log_data, json_file, indent=4, sort_keys=False)
 
         logging.info(f"Saved logs to {json_filename}")
+        wandb.save(json_filename)
 
 
 if __name__ == "__main__":
