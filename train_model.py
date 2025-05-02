@@ -135,7 +135,7 @@ def main():
     policy_args.add_argument(
         "--joint-energy",
         action="store_const",
-        const="discrete",
+        const="joint-energy",
         dest="policy_type",
         help="Use joint energy-based prediction policy.",
     )
