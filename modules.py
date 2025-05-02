@@ -1,8 +1,10 @@
 import math
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tensordict import TensorDict
 
 
 class PositionalEncoding(nn.Module):
@@ -158,7 +160,7 @@ class GSNormDecoder(nn.Module):
     ):
         device = gs_norms_embedding.device
         if target_gs_norms is None:
-            simulated_gs_norms = self._autoregressive_generation(
+            predicted_gs_norms = self._autoregressive_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
@@ -166,14 +168,34 @@ class GSNormDecoder(nn.Module):
                 device=device,
             )
         else:
-            simulated_gs_norms = self._teacher_forced_generation(
+            predicted_gs_norms = self._teacher_forced_generation(
                 gs_norms_embedding=gs_norms_embedding,
                 prev_action_embedding=prev_action_embedding,
                 current_action_embedding=current_action_embedding,
                 target_gs_norms=target_gs_norms,
                 device=device,
             )
-        return simulated_gs_norms
+
+        pad_mask = self._generate_pad_mask(basis_dim)
+        predicted_gs_norms[pad_mask] = 0
+        return predicted_gs_norms
+
+    def _generate_pad_mask(
+        self,
+        seq_lengths: torch.Tensor,
+    ):
+        batch_size = seq_lengths.size(0)
+        padding_mask = torch.zeros(
+            batch_size,
+            self.gs_norms_encoder.max_basis_dim,
+            dtype=torch.bool,
+            device=seq_lengths.device,
+        )
+
+        for i, length in enumerate(seq_lengths.int()):
+            padding_mask[i, length:] = True
+
+        return padding_mask
 
     def _autoregressive_generation(
         self,
@@ -183,9 +205,16 @@ class GSNormDecoder(nn.Module):
         basis_dim: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
+        prev_action_embedding = prev_action_embedding.unsqueeze(1).expand(
+            -1, gs_norms_embedding.size(1), -1
+        )
+        current_action_embedding = current_action_embedding.unsqueeze(1).expand(
+            -1, gs_norms_embedding.size(1), -1
+        )
+
         # buffers for storing generated output
         simulated_gs_norms = torch.zeros(
-            (gs_norms_embedding.size(0), gs_norms_embedding.size(1)),
+            (gs_norms_embedding.size(0), gs_norms_embedding.size(1) - 1),
             device=device,
         )
         generated_sequence = self.bos_token.expand(gs_norms_embedding.size(0), 1)
@@ -232,7 +261,7 @@ class GSNormDecoder(nn.Module):
                     dim=1,
                 )
 
-        return predicted_gs_norm
+        return simulated_gs_norms
 
     def _teacher_forced_generation(
         self,
@@ -242,6 +271,13 @@ class GSNormDecoder(nn.Module):
         target_gs_norms: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
+        prev_action_embedding = prev_action_embedding.unsqueeze(1).expand(
+            -1, gs_norms_embedding.size(1), -1
+        )
+        current_action_embedding = current_action_embedding.unsqueeze(1).expand(
+            -1, gs_norms_embedding.size(1), -1
+        )
+
         bos = self.bos_token.expand(target_gs_norms.size(0), 1)
         tgt = torch.cat([bos, target_gs_norms], dim=1)
         tgt = self.gs_norms_encoder.input_projection(tgt)
@@ -278,15 +314,18 @@ class ActionEncoder(nn.Module):
         self,
         max_basis_dim: int,
         embedding_dim: int,
+        hidden_dim: int = 128,
     ) -> None:
         super().__init__()
 
         self.max_basis_dim = max_basis_dim
         self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
 
         self.encoder = nn.Sequential(
-            nn.Linear(2, self.embedding_dim),
+            nn.Linear(2, self.hidden_dim),
             nn.LeakyReLU(),
+            nn.Linear(self.hidden_dim, self.embedding_dim),
         )
 
     def forward(
@@ -294,22 +333,162 @@ class ActionEncoder(nn.Module):
         action: torch.Tensor,
         basis_dim: torch.Tensor,
     ) -> torch.Tensor:
-        indices = torch.arange(self.max_basis_dim, device=action.device).unsqueeze(0)
-        # block size \(b\) corresponds to action id \(b - 1\)
-        indices = F.pad(indices, (0, self.max_basis_dim - indices.size(1)), value=0)
-        indices = indices.expand(-1, self.max_basis_dim)
-        basis_dim_ = basis_dim.unsqueeze(-1).expand(-1, self.max_basis_dim)
-        effective_block_size = (
-            torch.min(
-                action.unsqueeze(-1).expand(-1, self.max_basis_dim),
-                basis_dim_ - indices,
-            )
-            + 1
-        )
-        relative_block_size = effective_block_size / basis_dim_
-        action_embedding = torch.stack(
-            [effective_block_size, relative_block_size], dim=1
-        )
-        action_embedding = self.encoder(action_embedding.transpose(dim0=-2, dim1=-1))
+        stacked_input = torch.stack([action, basis_dim], dim=1)
+        action_embedding = self.encoder(stacked_input)
 
         return action_embedding
+
+
+class AuxiliaryPredictorConfig:
+    def __init__(
+        self,
+        lr: float = 1e-5,
+        hidden_dim: int = 128,  # TODO: must equal actor critic gs norm embedding hidden dim!
+        gs_norm_weight: float = 1.0,
+        time_weight: float = 1.0,
+    ) -> None:
+        self.hidden_dim = hidden_dim
+        self.lr = lr
+        self.hidden_dim = hidden_dim
+        self.gs_norm_weight = gs_norm_weight
+        self.time_weight = time_weight
+
+    def __str__(self):
+        self_dict = vars(self)
+        return f"AuxiliaryPredictorConfig({', '.join(f'{k}={v}' for k, v in self_dict.items())})"
+
+
+class AuxiliaryPredictionHeads(nn.Module):
+    def __init__(
+        self,
+        gs_norms_encoder: GSNormEncoder,
+        action_encoder: ActionEncoder,
+        dropout_p: float = 0.1,
+        hidden_dim: int = 128,
+        device: Union[torch.device, str] = "cpu",
+        teacher_forcing: bool = False,
+    ) -> None:
+        super().__init__()
+
+        self.gs_norms_encoder = gs_norms_encoder
+        self.action_encoder = action_encoder
+        self.dropout_p = dropout_p
+        self.hidden_dim = hidden_dim
+        self.device = device
+        self.teacher_forcing = teacher_forcing
+
+        # transition simulation heads
+        self.next_gs_norms_decoder = GSNormDecoder(
+            gs_norms_encoder=self.gs_norms_encoder,
+            input_dim=self.gs_norms_encoder.hidden_dim
+            + 2 * self.action_encoder.embedding_dim,
+        )
+        self.time_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+
+        # input reconstruction heads
+        self.current_gs_norms_decoder = GSNormDecoder(
+            gs_norms_encoder=self.gs_norms_encoder,
+            input_dim=self.gs_norms_encoder.hidden_dim
+            + 2 * self.action_encoder.embedding_dim,
+        )
+        self.prev_action_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+        self.current_action_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+        self.log_defect_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+        self.basis_dim_predictor = nn.Sequential(
+            nn.Linear(
+                self.hidden_dim + 2 * self.action_encoder.embedding_dim,
+                self.hidden_dim,
+            ),
+            nn.LeakyReLU(),
+            nn.Dropout(p=self.dropout_p),
+            nn.Linear(self.hidden_dim, 1),
+            nn.Flatten(-2),
+        )
+
+    def forward(
+        self,
+        current_gs_norms: torch.Tensor,
+        previous_action: torch.Tensor,
+        current_action: torch.Tensor,
+        basis_dim: torch.Tensor,
+        target_gs_norms: Optional[torch.Tensor] = None,
+    ) -> TensorDict[str, torch.Tensor]:
+        pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
+        gs_norms_embedding = self.gs_norms_encoder(current_gs_norms, pad_mask)
+
+        prev_action_embedding = self.action_encoder(previous_action, basis_dim)
+        current_action_embedding = self.action_encoder(current_action, basis_dim)
+
+        pred_context = torch.cat(
+            [
+                gs_norms_embedding[:, 0, :],
+                prev_action_embedding,
+                current_action_embedding,
+            ],
+            dim=1,
+        )
+
+        outputs = {}
+
+        # transition simulation
+        outputs["simulated_gs_norms"] = self.next_gs_norms_decoder(
+            gs_norms_embedding=gs_norms_embedding,
+            prev_action_embedding=prev_action_embedding,
+            current_action_embedding=current_action_embedding,
+            target_gs_norms=target_gs_norms if self.teacher_forcing else None,
+            basis_dim=basis_dim,
+        )
+        outputs["simulated_time"] = self.time_predictor(pred_context).exp()
+
+        # input reconstruction
+        outputs["reconstructed_gs_norms"] = self.current_gs_norms_decoder(
+            gs_norms_embedding=gs_norms_embedding,
+            prev_action_embedding=prev_action_embedding,
+            current_action_embedding=current_action_embedding,
+            target_gs_norms=target_gs_norms if self.teacher_forcing else None,
+            basis_dim=basis_dim,
+        )
+        outputs["reconstructed_prev_action"] = self.prev_action_predictor(pred_context)
+        outputs["reconstructed_current_action"] = self.current_action_predictor(
+            pred_context
+        )
+        outputs["reconstructed_log_defect"] = self.log_defect_predictor(pred_context)
+        outputs["reconstructed_basis_dim"] = self.basis_dim_predictor(pred_context)
+
+        return TensorDict(outputs)

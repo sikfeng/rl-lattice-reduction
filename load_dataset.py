@@ -21,7 +21,7 @@ class LatticeBaseDataset(Dataset):
         self.data = np.load(file_path, allow_pickle=True)
 
         self.transform = transform
-        self.device = device or torch.device('cpu')
+        self.device = device or torch.device("cpu")
 
         self.dim = dimension
 
@@ -37,15 +37,16 @@ class LatticeBaseDataset(Dataset):
             idx (int): Index of the sample
 
         Returns:
-            dict: Dictionary containing tensors of the basis, shortest vector, 
+            dict: Dictionary containing tensors of the basis, shortest vector,
                  LLL-reduced basis, and orthogonality defect
         """
         sample = self.data[idx]
 
         # Convert numpy arrays to PyTorch tensors and move to device
-        tensor_sample = TensorDict({
-            key: torch.tensor(sample[key], dtype=torch.float32) for key in sample
-        }, batch_size=[])
+        tensor_sample = TensorDict(
+            {key: torch.tensor(sample[key], dtype=torch.float32) for key in sample},
+            batch_size=[],
+        )
 
         # Apply transforms if specified
         if self.transform:
@@ -54,27 +55,30 @@ class LatticeBaseDataset(Dataset):
         return tensor_sample
 
 
-def load_lattice_dataloader(data_dir,
-                            dimension,
-                            distribution_type,
-                            batch_size=32,
-                            shuffle=True,
-                            num_workers=0,
-                            transform=None,
-                            device=None):
+def load_lattice_dataloader(
+    data_dir,
+    dimension,
+    distribution_type,
+    batch_size=32,
+    shuffle=True,
+    num_workers=0,
+    transform=None,
+    device=None,
+):
     file_path = Path(data_dir) / f"dim_{dimension}_type_{distribution_type}.npy"
 
     if not file_path.exists():
         raise FileNotFoundError(f"Dataset file not found: {file_path}")
 
     dataset = LatticeBaseDataset(
-        file_path, dimension, transform=transform, device=device)
+        file_path, dimension, transform=transform, device=device
+    )
 
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        pin_memory=(device is not None and device.type == 'cuda'),
-        collate_fn=TensorDict.stack  # Stack TensorDicts into batches
+        pin_memory=(device is not None and device.type == "cuda"),
+        collate_fn=TensorDict.stack,  # Stack TensorDicts into batches
     )

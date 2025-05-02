@@ -10,8 +10,8 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from agent import Agent, AgentConfig, PPOConfig, SimulatorConfig
-from basis_stat_trainer import BasisStatPredictorConfig
+from agent import Agent, AgentConfig, PPOConfig
+from modules import AuxiliaryPredictorConfig
 from reduction_env import ReductionEnvConfig
 
 
@@ -69,36 +69,46 @@ def main():
 
     dist_args = env_args.add_mutually_exclusive_group(required=True)
     dist_args.add_argument(
-        "--uniform", action="store_true", help="Use a uniform distribution."
+        "--uniform",
+        action="store_const",
+        const="uniform",
+        dest="dist",
+        help="Use a uniform distribution.",
     )
     dist_args.add_argument(
-        "--qary", action="store_true", help="Use a q-ary distribution."
+        "--qary",
+        action="store_const",
+        const="qary",
+        dest="dist",
+        help="Use a q-ary distribution.",
     )
     dist_args.add_argument(
-        "--ntrulike", action="store_true", help="Use an NTRU-like distribution."
+        "--ntrulike",
+        action="store_const",
+        const="ntrulike",
+        dest="dist",
+        help="Use an NTRU-like distribution.",
     )
     dist_args.add_argument(
-        "--knapsack", action="store_true", help="Use a knapsack distribution."
+        "--knapsack",
+        action="store_const",
+        const="knapsack",
+        dest="dist",
+        help="Use a knapsack distribution.",
     )
 
     arch_args = parser.add_argument_group("Architecture Settings")
     arch_args.add_argument(
-        "--simulator",
+        "--aux-pred",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Use a simulator for training.",
-    )
-    arch_args.add_argument(
-        "--basis-stat-predictor",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Use a autoencoder style basis statistic predictor for training.",
+        help="Use a auxiliary predictor (simulate transitions and input reconstruction) for training.",
     )
     arch_args.add_argument(
         "--teacher-forcing",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Use teacher forcing to train the simulator and the basis statistic predictor.",
+        help="Use teacher forcing to train the auxiliary predictor.",
     )
     arch_args.add_argument(
         "--net-dim",
@@ -109,14 +119,24 @@ def main():
 
     policy_args = arch_args.add_mutually_exclusive_group(required=True)
     policy_args.add_argument(
-        "--continuous", action="store_true", help="Use continuous prediction policy."
+        "--continuous",
+        action="store_const",
+        const="continuous",
+        dest="policy_type",
+        help="Use continuous prediction policy.",
     )
     policy_args.add_argument(
-        "--discrete", action="store_true", help="Use discrete prediction policy."
+        "--discrete",
+        action="store_const",
+        const="discrete",
+        dest="policy_type",
+        help="Use discrete prediction policy.",
     )
     policy_args.add_argument(
         "--joint-energy",
-        action="store_true",
+        action="store_const",
+        const="discrete",
+        dest="policy_type",
         help="Use joint energy-based prediction policy.",
     )
 
@@ -140,48 +160,32 @@ def main():
         help="Weight for shortest vector length reduction in the reward function.",
     )
 
-    simulator_args = parser.add_argument_group(
-        "Simulator Weights (only used if --simulator is enabled)"
+    aux_pred_args = parser.add_argument_group(
+        "Auxiliary Predictor Weights (only used if --aux-pred is enabled)"
     )
-    simulator_args.add_argument(
-        "--simulator-lr",
+    aux_pred_args.add_argument(
+        "--aux-pred-lr",
         type=float,
         default=1e-6,
-        help="Learning rate for simulator optimizer.",
+        help="Learning rate for auxiliary predictor optimizer.",
     )
-    simulator_args.add_argument(
-        "--simulator-reward-weight",
+    aux_pred_args.add_argument(
+        "--aux-pred-reward-weight",
         type=float,
         default=0.1,
-        help="Weight for simulator reward term (only used if --simulator is enabled).",
+        help="Weight for auxiliary predictor reward term (only used if --aux-pred is enabled).",
     )
-    simulator_args.add_argument(
-        "--simulator-gs-norm-weight",
+    aux_pred_args.add_argument(
+        "--aux-pred-gs-norm-weight",
         type=float,
         default=1.0,
-        help="Weight for simulator GS norm loss term (only used if --simulator is enabled).",
+        help="Weight for auxiliary predictor GS norm loss term (only used if --aux-pred is enabled).",
     )
-    simulator_args.add_argument(
-        "--simulator-time-weight",
+    aux_pred_args.add_argument(
+        "--aux-pred-time-weight",
         type=float,
         default=1.0,
-        help="Weight for simulator time loss term (only used if --simulator is enabled).",
-    )
-
-    basis_stats_args = parser.add_argument_group(
-        "Basis Statistics Predictor Weights (only used if --basis-stat-predictor is enabled)"
-    )
-    basis_stats_args.add_argument(
-        "--basis-stats-lr",
-        type=float,
-        default=1e-6,
-        help="Learning rate for basis statistics predictor optimizer.",
-    )
-    basis_stats_args.add_argument(
-        "--basis-stats-reward-weight",
-        type=float,
-        default=0.1,
-        help="Weight for basis statistics predictor reward term (only used if --basis-stat-predictor is enabled).",
+        help="Weight for auxiliary predictor time loss term (only used if --aux-pred is enabled).",
     )
 
     ppo_args = parser.add_argument_group("PPO Training Parameters")
@@ -227,23 +231,6 @@ def main():
         raise ValueError("max_block_size must be at most dim.")
     if 2 > args.max_block_size:
         raise ValueError("max_block_size cannot be less than 2.")
-
-    if args.uniform:
-        args.dist = "uniform"
-    elif args.qary:
-        args.dist = "qary"
-    elif args.ntrulike:
-        args.dist = "ntrulike"
-    elif args.knapsack:
-        args.dist = "knapsack"
-
-    # Determine selected prediction type
-    if args.continuous:
-        args.policy_type = "continuous"
-    elif args.discrete:
-        args.policy_type = "discrete"
-    elif args.joint_energy:
-        args.policy_type = "joint-energy"
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -310,27 +297,21 @@ def main():
         gamma=args.ppo_gamma,
         gae_lambda=args.ppo_gae_lambda,
     )
-    simulator_config = SimulatorConfig(
-        lr=args.simulator_lr,
-        gs_norm_weight=args.simulator_gs_norm_weight,
-        time_weight=args.simulator_time_weight,
-    )
-    basis_stat_predictor_config = BasisStatPredictorConfig(
-        lr=args.basis_stats_lr,
+    auxiliary_predictor_config = AuxiliaryPredictorConfig(
+        lr=args.aux_pred_lr,
+        gs_norm_weight=args.aux_pred_gs_norm_weight,
+        time_weight=args.aux_pred_time_weight,
     )
     agent_config = AgentConfig(
         ppo_config=ppo_config,
         device=device,
         batch_size=args.batch_size,
         env_config=env_config,
-        simulator=args.simulator,
-        basis_stat_predictor=args.basis_stat_predictor,
+        auxiliary_predictor=args.aux_pred,
         teacher_forcing=args.teacher_forcing,
         policy_type=args.policy_type,
-        simulator_reward_weight=args.simulator_reward_weight,
-        basis_stat_predictor_reward_weight=args.basis_stats_reward_weight,
-        simulator_config=simulator_config,
-        basis_stat_predictor_config=basis_stat_predictor_config,
+        auxiliary_predictor_reward_weight=args.aux_pred_reward_weight,
+        auxiliary_predictor_config=auxiliary_predictor_config,
     )
     agent = Agent(agent_config=agent_config).to(device)
 

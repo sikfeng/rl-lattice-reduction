@@ -277,23 +277,17 @@ class ActorCritic(nn.Module):
         previous_action = tensordict["last_action"]
         previous_action_modified = tensordict["last_action_modified"]
 
-        if "gs_norms_embedding" in cached_states:
-            gs_norms_embedding = cached_states["gs_norms_embedding"]
-        else:
-            pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
-            gs_norms_embedding = self.gs_norms_encoder(gs_norms, pad_mask)
+        pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
+        gs_norms_embedding = self.gs_norms_encoder(gs_norms, pad_mask)
 
-        if "prev_action_embedding" in cached_states:
-            prev_action_embedding = cached_states["prev_action_embedding"]
-        else:
-            prev_action_embedding = self.action_encoder(previous_action, basis_dim)
+        prev_action_embedding = self.action_encoder(previous_action, basis_dim)
+        prev_action_embedding = prev_action_embedding.unsqueeze(1).expand(
+            -1, gs_norms_embedding.size(1), -1
+        )
 
         combined = torch.cat(
             [gs_norms_embedding.mean(dim=1), prev_action_embedding.mean(dim=1)], dim=1
         )
-
-        cached_states["gs_norms_embedding"] = gs_norms_embedding
-        cached_states["prev_action_embedding"] = prev_action_embedding
 
         termination_prob, block_output = self.actor(
             combined, previous_action, basis_dim, previous_action_modified
@@ -302,7 +296,6 @@ class ActorCritic(nn.Module):
             termination_prob,
             block_output,
             self.critic(combined).squeeze(-1),
-            cached_states,
         )
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
