@@ -295,7 +295,7 @@ class ReductionEnvironment:
             "basis": basis,
             "last_action": last_action,
             "basis_dim": torch.tensor([self.basis.ncols]),
-            "last_action_modified": torch.tensor([self.clean]),
+            "last_action_unmodified": torch.tensor([self.clean]),
         }
 
     def _get_info(self) -> Dict[str, Any]:
@@ -313,14 +313,14 @@ class ReductionEnvironment:
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         if options is None:
             # basis_dim = np.random.randint(self.config.min_basis_dim, self.config.max_basis_dim + 1)
-            basis_dim = (
+            self.basis_dim = (
                 np.random.randint(
                     self.config.train_min_dim // 2,
                     self.config.train_max_dim // 2 + 1,
                 )
                 * 2
             )  # temp hack until I figure out how to properly represent allowable lattice dimensions
-            options = generate_random_basis(None, basis_dim, self.config.distribution)
+            options = generate_random_basis(None, self.basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
 
         self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
@@ -448,6 +448,9 @@ class ReductionEnvironment:
     def _check_termination(self):
         """Check if episode has terminated"""
         if self.action_history[-1] == 0:
+            return True
+
+        if self.clean and self._action_to_block(self.action_history[-1]) == self.basis_dim:
             return True
 
         return False
