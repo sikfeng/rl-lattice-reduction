@@ -41,11 +41,11 @@ class ContinuousPolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
-        previous_action_modified: torch.Tensor,
+        previous_action_unmodified: torch.Tensor,
     ) -> torch.Tensor:
         termination_prob = self.termination_actor(features)
         block_size_output = self.block_size_actor(features)
-        absolute_size = (previous_action + ~previous_action_modified + 1) + (
+        absolute_size = (previous_action + previous_action_unmodified + 1) + (
             1 - F.sigmoid(block_size_output[:, 0])
         ) * (basis_dim - previous_action)
         block_size_logits = torch.stack(
@@ -94,7 +94,7 @@ class DiscretePolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
-        previous_action_modified: torch.Tensor,
+        previous_action_unmodified: torch.Tensor,
     ) -> torch.Tensor:
         termination_logit = self.termination_actor(features)
 
@@ -109,7 +109,7 @@ class DiscretePolicyHead(nn.Module):
             .expand(features.size(0), -1)
         )
         previous_action_ = (
-            (previous_action + ~previous_action_modified)
+            (previous_action + previous_action_unmodified)
             .unsqueeze(1)
             .expand(logits.size(0), 1)
         )
@@ -168,12 +168,12 @@ class JointEnergyBasedPolicyHead(nn.Module):
         features: torch.Tensor,
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
-        previous_action_modified: torch.Tensor,
+        previous_action_unmodified: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         termination_logit = self.termination_actor(features)
 
         indices = (
-            torch.arange(start=2, end=self.action_dim + 1, device=features.device)
+            torch.arange(start=2, end=basis_dim.max() + 1, device=features.device)
             .float()
             .unsqueeze(0)
             .expand(features.size(0), -1)
@@ -185,13 +185,13 @@ class JointEnergyBasedPolicyHead(nn.Module):
         logits = self.actor(torch.cat([features_reshaped, index_embeddings], dim=2))
 
         previous_action_ = (
-            (previous_action + ~previous_action_modified)
+            (previous_action + previous_action_unmodified)
             .unsqueeze(1)
             .expand(logits.size(0), 1)
         )
         basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
         # mask entries which are False will be masked out
-        valid_mask = (indices >= previous_action_) & (indices <= basis_dim_)
+        valid_mask = (indices >= previous_action_ + 1) & (indices <= basis_dim_)
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
 
         return termination_logit, masked_logits
@@ -275,7 +275,7 @@ class ActorCritic(nn.Module):
         gs_norms = tensordict["gs_norms"]  # [batch_size, basis_dim]
         basis_dim = tensordict["basis_dim"]  # [batch_size]
         previous_action = tensordict["last_action"]
-        previous_action_modified = tensordict["last_action_modified"]
+        previous_action_unmodified = tensordict["last_action_unmodified"]
 
         pad_mask = self.gs_norms_encoder._generate_pad_mask(basis_dim)
         gs_norms_embedding = self.gs_norms_encoder(gs_norms, pad_mask)
@@ -290,7 +290,7 @@ class ActorCritic(nn.Module):
         )
 
         termination_prob, block_output = self.actor(
-            combined, previous_action, basis_dim, previous_action_modified
+            combined, previous_action, basis_dim, previous_action_unmodified
         )
         return (
             termination_prob,
@@ -318,7 +318,7 @@ class ActorCritic(nn.Module):
                 "gs_norms": gs_norms,
                 "last_action": tensordict["last_action"],
                 "basis_dim": basis_dim,
-                "last_action_modified": tensordict["last_action_modified"],
+                "last_action_unmodified": tensordict["last_action_unmodified"],
             },
             batch_size=[],
         )
