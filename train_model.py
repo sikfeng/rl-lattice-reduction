@@ -240,7 +240,7 @@ def main():
 
     if args.run_name:
         run_name = args.run_name
-        checkpoint_dir = Path(f"checkpoint/{run_name}")
+        checkpoint_dir = Path(f"checkpoints/{run_name}")
         if checkpoint_dir.exists() and any(checkpoint_dir.iterdir()):
             raise FileExistsError(
                 f"Checkpoint directory '{checkpoint_dir}' already exists and is not empty."
