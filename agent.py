@@ -696,7 +696,6 @@ class Agent(nn.Module):
             losses["simulated_time"] = (
                 preds["simulated_time"] - next_info["time"]
             ) ** 2
-            print("time loss", losses["simulated_time"])
 
             # reconstruction losses
             losses["reconstructed_gs_norms"] = (
