@@ -147,6 +147,9 @@ def func(_, n: int, distribution: str) -> Dict[str, Any]:
             # Calculate Gaussian heuristic
             gh = gaussian_heuristic(basis)
 
+            if gh == 0:
+                raise ValueError("Gaussian heuristic is zero.")
+
             # Store all the data
             return {
                 "basis": basis,
@@ -154,8 +157,7 @@ def func(_, n: int, distribution: str) -> Dict[str, Any]:
                 "gaussian_heuristic": gh,
                 "target_length": tgt / gh if tgt != -1 else -1,
             }
-        #except (ReductionError, ValueError, RuntimeError) as e:
-        except KeyboardInterrupt:
+        except (ReductionError, ValueError, RuntimeError) as e:
             continue
 
 
