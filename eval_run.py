@@ -89,34 +89,41 @@ def main():
     parser.add_argument("--dim", type=int, default=32)
     parser.add_argument("--run-dir", type=str, required=True)
 
-    dist_group = parser.add_mutually_exclusive_group(required=True)
-    dist_group.add_argument(
+    dist_args = parser.add_mutually_exclusive_group(required=True)
+    dist_args.add_argument(
         "--uniform",
         action="store_const",
         const="uniform",
         dest="dist",
         help="Use a uniform distribution.",
     )
-    dist_group.add_argument(
+    dist_args.add_argument(
         "--qary",
         action="store_const",
         const="qary",
         dest="dist",
         help="Use a q-ary distribution.",
     )
-    dist_group.add_argument(
+    dist_args.add_argument(
         "--ntrulike",
         action="store_const",
         const="ntrulike",
         dest="dist",
         help="Use an NTRU-like distribution.",
     )
-    dist_group.add_argument(
-        "--knapsack",
+    dist_args.add_argument(
+        "--knapsack-lo",
         action="store_const",
-        const="knapsack",
+        const="knapsack_lo",
         dest="dist",
-        help="Use a knapsack distribution.",
+        help="Use a knapsack distribution (LO85).",
+    )
+    dist_args.add_argument(
+        "--knapsack-clos",
+        action="store_const",
+        const="knapsack_clos",
+        dest="dist",
+        help="Use a knapsack distribution (CLOS91).",
     )
 
     args = parser.parse_args()

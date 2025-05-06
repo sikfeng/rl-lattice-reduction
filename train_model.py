@@ -90,11 +90,18 @@ def main():
         help="Use an NTRU-like distribution.",
     )
     dist_args.add_argument(
-        "--knapsack",
+        "--knapsack-lo",
         action="store_const",
-        const="knapsack",
+        const="knapsack_lo",
         dest="dist",
-        help="Use a knapsack distribution.",
+        help="Use a knapsack distribution (LO85).",
+    )
+    dist_args.add_argument(
+        "--knapsack-clos",
+        action="store_const",
+        const="knapsack_clos",
+        dest="dist",
+        help="Use a knapsack distribution (CLOS91).",
     )
 
     arch_args = parser.add_argument_group("Architecture Settings")
