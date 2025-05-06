@@ -275,6 +275,7 @@ def main():
         device = torch.device("cpu")
 
     wandb.init(project="bkz-rl-training", name=run_name)
+    wandb.save(checkpoint_dir / "training.log")
 
     env_config = ReductionEnvConfig(
         net_dim=args.net_dim,
@@ -320,6 +321,7 @@ def main():
 
     agent.save(checkpoint_dir / "steps_0.pth")
     logging.info("Saved pretrained model as steps_0.pth")
+    wandb.save(checkpoint_dir / "steps_0.pth")
 
     agent.train()
 
@@ -330,6 +332,7 @@ def main():
         initial=0,
         total=args.steps if args.steps >= 0 else None,
     )
+
     while args.steps < 0 or step < args.steps:
         step_metrics = agent.collect_experiences()
         update_metrics = agent.update()
@@ -346,6 +349,7 @@ def main():
         if step % args.chkpt_interval == 0 and step != args.steps:
             agent.save(checkpoint_dir / f"steps_{step}.pth")
             logging.info(f"Saved checkpoint at step {step}")
+            wandb.save(checkpoint_dir / f"steps_{step}.pth")
 
     progress_bar.close()
 
