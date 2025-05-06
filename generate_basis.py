@@ -4,10 +4,12 @@ import math
 import multiprocessing as mp
 from pathlib import Path
 import random
+import time
 from typing import Any, Dict, List, Tuple
 
 import fpylll
 from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
+from fpylll import FPLLL
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -142,6 +144,10 @@ def generate_knapsack_clos(n: int, b: int) -> Tuple[List[List[int]], int]:
 
 
 def func(_, n: int, distribution: str) -> Dict[str, Any]:
+    seed = time.time_ns() % 2**32
+    random.seed(seed)
+    np.random.seed(seed)
+    FPLLL.set_random_seed(seed)
     while True:
         try:
             # tgt is -1 if distribution is not knapsack
@@ -188,7 +194,6 @@ def main():
     parser.add_argument("-d", "--dim", type=int, default=4)
     parser.add_argument("--samples", type=int, default=1_000)
     parser.add_argument("--processes", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=1)
 
     dist_args = parser.add_mutually_exclusive_group(required=True)
     dist_args.add_argument(
@@ -234,7 +239,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     worker = partial(func, n=args.dim, distribution=args.dist)
-    np.random.seed(args.seed)
     with mp.Pool(args.processes) as pool:
         data = list(
             tqdm(
