@@ -7,11 +7,9 @@ import random
 import time
 from typing import Any, Dict, List, Tuple
 
-import fpylll
-from fpylll import GSO, IntegerMatrix, LLL, ReductionError, SVP
+from fpylll import IntegerMatrix, LLL, ReductionError, SVP
 from fpylll import FPLLL
 import numpy as np
-import torch
 from tqdm import tqdm
 
 
