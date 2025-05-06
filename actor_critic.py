@@ -47,7 +47,7 @@ class ContinuousPolicyHead(nn.Module):
         block_size_output = self.block_size_actor(features)
         absolute_size = (previous_action + previous_action_unmodified + 1) + (
             1 - F.sigmoid(block_size_output[:, 0])
-        ) * (basis_dim - previous_action)
+        ) * (basis_dim - (previous_action + previous_action_unmodified + 1))
         block_size_logits = torch.stack(
             [
                 absolute_size,
