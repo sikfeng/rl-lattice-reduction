@@ -323,7 +323,8 @@ class ReductionEnvironment:
             options = generate_random_basis(None, self.basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
 
-        self.basis = IntegerMatrix.from_matrix(options["basis"].int().tolist())
+        basis_int = [[int(x) for x in row] for row in options["basis"].tolist()]
+        self.basis = IntegerMatrix.from_matrix(basis_int)
         self.gh = self.gaussian_heuristic(self.basis)
         self.tgt_length = options["target_length"]
 
