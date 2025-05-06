@@ -134,7 +134,7 @@ def generate_knapsack_clos(n: int, b: int) -> Tuple[List[List[int]], int]:
 
     for e in elements:
         basis_[n - 1][0] += basis_[e][0]
-    for i in range(n - 2):
+    for i in range(n - 1):
         basis_[i][i + 1] = 2
         basis_[n - 1][i + 1] = 1
 
