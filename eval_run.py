@@ -53,32 +53,32 @@ def recursive_mean(d: Dict[str, Any]) -> Dict[str, Any]:
 def evaluate(
     agent: Agent,
     dataloader: DataLoader,
-    checkpoint_episode: int,
+    checkpoint_step: int,
 ) -> Dict[str, Any]:
     aggregated_metrics = []
-    aggregated_raw_logs = []
+    aggregated_raw_logs_per_step = []
 
     with torch.no_grad():
         for index, batch in enumerate(
             tqdm(
                 dataloader,
                 dynamic_ncols=True,
-                desc=f"Validating Checkpoint {checkpoint_episode}",
+                desc=f"Validating Checkpoint {checkpoint_step}",
             )
         ):
-            batch_metrics, episode_logs = agent.evaluate(batch)
+            batch_metrics, step_logs = agent.evaluate(batch)
             aggregated_metrics.append(batch_metrics)
-            aggregated_raw_logs.append(episode_logs)
+            aggregated_raw_logs_per_step.append(step_logs)
 
-            wandb.log({**batch_metrics, "index": index})
-            wandb.log({"raw_val_logs": episode_logs})
+            wandb.log({**batch_metrics, "val_index": index})
+            wandb.log({"raw_logs_per_step": step_logs})
 
         aggregated_metrics = transpose_list_of_dicts(aggregated_metrics)
         avg_metrics = recursive_mean(aggregated_metrics)
-        avg_metrics["checkpoint_episode"] = checkpoint_episode
+        avg_metrics["checkpoint_step"] = checkpoint_step
         wandb.log(avg_metrics)
 
-        return avg_metrics, aggregated_raw_logs
+        return avg_metrics, aggregated_raw_logs_per_step
 
 
 def main():
@@ -167,18 +167,18 @@ def main():
     checkpoint_files = []
 
     # Collect and sort checkpoint files
-    for pth_file in run_dir.glob("episodes_*.pth"):
+    for pth_file in run_dir.glob("steps_*.pth"):
         try:
-            episode = int(pth_file.stem.split("_")[1])
-            checkpoint_files.append((episode, pth_file))
+            step = int(pth_file.stem.split("_")[1])
+            checkpoint_files.append((step, pth_file))
         except (IndexError, ValueError):
             logging.warning(f"Skipping invalid file: {pth_file}")
 
     checkpoint_files.sort()
 
     # Process each checkpoint in order
-    for checkpoint_episode, pth_file in checkpoint_files:
-        json_filename = reports_dir / f"episode_{checkpoint_episode}.json"
+    for checkpoint_step, pth_file in checkpoint_files:
+        json_filename = reports_dir / f"step_{checkpoint_step}.json"
         if json_filename.exists():
             logging.info(f"Skipping {pth_file} as {json_filename} exists.")
             continue
@@ -202,7 +202,7 @@ def main():
         log_data = {}
         log_data["agent_config"] = str(agent_config)
 
-        avg_metrics, aggregated_raw_logs = evaluate(agent, val_loader, checkpoint_episode)
+        avg_metrics, aggregated_raw_logs = evaluate(agent, val_loader, checkpoint_step)
         logging.info(f"Validation metrics:")
         logging.info(str(avg_metrics))
         log_data["avg_metrics"] = avg_metrics

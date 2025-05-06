@@ -26,10 +26,10 @@ def main():
         "--seed", type=int, default=0, help="Random seed for reproducibility."
     )
     parser.add_argument(
-        "--episodes",
+        "--steps",
         type=int,
         default=1000,
-        help="Number of training episodes. Set to a negative value for infinite training",
+        help="Number of training steps. Set to a negative value for infinite training",
     )
     parser.add_argument(
         "--chkpt-interval", type=int, default=1000, help="Checkpoint saving interval."
@@ -318,40 +318,40 @@ def main():
     total_params = sum(p.numel() for p in agent.parameters())
     logging.info(f"Total parameters: {total_params}")
 
-    agent.save(checkpoint_dir / "episodes_0.pth")
-    logging.info("Saved pretrained model as episodes_0.pth")
+    agent.save(checkpoint_dir / "steps_0.pth")
+    logging.info("Saved pretrained model as steps_0.pth")
 
     agent.train()
 
-    episode = 0
+    step = 0
     progress_bar = tqdm(
-        desc="Training episodes",
+        desc="Training steps",
         dynamic_ncols=True,
         initial=0,
-        total=args.episodes if args.episodes >= 0 else None,
+        total=args.steps if args.steps >= 0 else None,
     )
-    while args.episodes < 0 or episode < args.episodes:
-        episode_metrics = agent.collect_experiences()
+    while args.steps < 0 or step < args.steps:
+        step_metrics = agent.collect_experiences()
         update_metrics = agent.update()
 
-        for metric in episode_metrics:
+        for metric in step_metrics:
             wandb.log(metric)
 
         wandb.log(update_metrics)
 
-        episode += 1
+        step += 1
         progress_bar.update(1)
-        progress_bar.set_description(f"Training episode: {episode}")
+        progress_bar.set_description(f"Training step: {step}")
 
-        if episode % args.chkpt_interval == 0 and episode != args.episodes:
-            agent.save(checkpoint_dir / f"episodes_{episode}.pth")
-            logging.info(f"Saved checkpoint at episode {episode}")
+        if step % args.chkpt_interval == 0 and step != args.steps:
+            agent.save(checkpoint_dir / f"steps_{step}.pth")
+            logging.info(f"Saved checkpoint at step {step}")
 
     progress_bar.close()
 
-    logging.info(f"Training ended at episode {episode}")
-    agent.save(checkpoint_dir / f"episodes_{episode}.pth")
-    logging.info(f"Saved final model at episode {episode}")
+    logging.info(f"Training ended at step {step}")
+    agent.save(checkpoint_dir / f"steps_{step}.pth")
+    logging.info(f"Saved final model at step {step}")
 
 
 if __name__ == "__main__":
