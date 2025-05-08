@@ -40,9 +40,11 @@ class PositionalEncoding(nn.Module):
 class GSNormEncoder(nn.Module):
     def __init__(
         self,
-        dropout_p: float,
         max_basis_dim: int,
         hidden_dim: int,
+        dropout_p: float = 0.1,
+        num_heads: int = 8,
+        num_layers: int = 6,
     ) -> None:
         super().__init__()
 
@@ -59,25 +61,20 @@ class GSNormEncoder(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
+
         self.pos_encoding = PositionalEncoding(
             self.hidden_dim,
             max_len=self.max_basis_dim + 1,
         )
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
-            nhead=4,
-            dim_feedforward=4 * self.hidden_dim,
+            nhead=num_heads,
             dropout=dropout_p,
             batch_first=True,
         )
         self.transformer_encoder = nn.TransformerEncoder(
             self.encoder_layer,
-            num_layers=3,
-        )
-        self.encoder_projection = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
+            num_layers=num_layers,
         )
 
     def forward(
@@ -92,7 +89,6 @@ class GSNormEncoder(nn.Module):
 
         x = self.pos_encoding(x)
         x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
-        x = self.encoder_projection(x)
         return x
 
     def _generate_pad_mask(
@@ -120,6 +116,8 @@ class GSNormDecoder(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         dropout_p: float = 0.1,
+        num_heads: int = 8,
+        num_layers: int = 6,
     ):
         super().__init__()
 
@@ -131,14 +129,13 @@ class GSNormDecoder(nn.Module):
         self.bos_token = nn.Parameter(torch.randn(1, 1))
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.input_dim,
-            nhead=4,
-            dim_feedforward=4 * self.hidden_dim,
+            nhead=num_heads,
             dropout=self.dropout_p,
             batch_first=True,
         )
         self.gs_norm_simulator = nn.TransformerDecoder(
             decoder_layer,
-            num_layers=3,
+            num_layers=num_layers,
         )
         self.gs_norm_projection = nn.Sequential(
             nn.Linear(
