@@ -4,6 +4,11 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchtune.modules import (
+    MultiHeadAttention,
+    RotaryPositionalEmbeddings,
+    TransformerSelfAttentionLayer,
+)
 from tensordict import TensorDict
 
 
@@ -45,6 +50,8 @@ class GSNormEncoder(nn.Module):
         dropout_p: float = 0.1,
         num_heads: int = 8,
         num_layers: int = 6,
+        rope_base: int = 10_000,
+        dim_feedforward: int = 2048,
     ) -> None:
         super().__init__()
 
@@ -62,10 +69,36 @@ class GSNormEncoder(nn.Module):
             nn.Linear(self.hidden_dim, self.hidden_dim),
         )
 
-        self.pos_encoding = PositionalEncoding(
-            self.hidden_dim,
-            max_len=self.max_basis_dim + 1,
+        rope = RotaryPositionalEmbeddings(
+            dim=self.hidden_dim // num_heads, max_seq_len=max_basis_dim, base=rope_base
         )
+        self_attn = MultiHeadAttention(
+            embed_dim=self.hidden_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_heads,
+            head_dim=self.hidden_dim // num_heads,
+            q_proj=nn.Linear(self.hidden_dim, self.hidden_dim, bias=False),
+            k_proj=nn.Linear(self.hidden_dim, self.hidden_dim, bias=False),
+            v_proj=nn.Linear(self.hidden_dim, self.hidden_dim, bias=False),
+            output_proj=nn.Linear(self.hidden_dim, self.hidden_dim, bias=False),
+            pos_embeddings=rope,
+            max_seq_len=max_basis_dim,
+        )
+        self.encoder = nn.Sequential(
+            *[TransformerSelfAttentionLayer(
+                attn=self_attn,
+                mlp=nn.Sequential(
+                    nn.Linear(self.hidden_dim, dim_feedforward),
+                    nn.Dropout(dropout_p),
+                    nn.LeakyReLU(),
+                    nn.Linear(dim_feedforward, self.hidden_dim),
+                ),
+                sa_norm=nn.LayerNorm(self.hidden_dim),
+                mlp_norm=nn.LayerNorm(self.hidden_dim),
+            ) for _ in range(num_layers)],
+            nn.LayerNorm(self.hidden_dim),
+        )
+
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=num_heads,
@@ -87,7 +120,6 @@ class GSNormEncoder(nn.Module):
         cls_tokens = self.cls_token.expand(gs_norms.size(0), -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
 
-        x = self.pos_encoding(x)
         x = self.transformer_encoder(x, src_key_padding_mask=pad_mask)
         return x
 
@@ -222,7 +254,6 @@ class GSNormDecoder(nn.Module):
         for i in range(basis_dim.max()):
             # embedding features for sequence generated so far
             tgt = self.gs_norms_encoder.input_projection(generated_sequence)
-            tgt = self.gs_norms_encoder.pos_encoding(tgt)
             tgt = torch.cat(
                 [
                     tgt,
@@ -278,7 +309,6 @@ class GSNormDecoder(nn.Module):
         bos = self.bos_token.expand(target_gs_norms.size(0), 1)
         tgt = torch.cat([bos, target_gs_norms], dim=1)
         tgt = self.gs_norms_encoder.input_projection(tgt)
-        tgt = self.gs_norms_encoder.pos_encoding(tgt)
         seq_len = tgt.size(1)
         tgt = torch.cat(
             [
