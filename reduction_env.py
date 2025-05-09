@@ -322,6 +322,8 @@ class ReductionEnvironment:
             )  # temp hack until I figure out how to properly represent allowable lattice dimensions
             options = generate_random_basis(None, self.basis_dim, self.config.distribution)
             options["basis"] = torch.tensor(options["basis"])
+        else:
+            self.basis_dim = options["basis"].size(-1)
 
         basis_int = [[int(x) for x in row] for row in options["basis"].tolist()]
         self.basis = IntegerMatrix.from_matrix(basis_int)
