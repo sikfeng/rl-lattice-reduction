@@ -125,7 +125,7 @@ class GSNormDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.dropout_p = dropout_p
 
-        self.bos_token = nn.Parameter(torch.randn(1, 1))
+        self.bos_token = nn.Parameter(torch.randn(1, hidden_dim))
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.input_dim,
             nhead=num_heads,
@@ -213,14 +213,16 @@ class GSNormDecoder(nn.Module):
             (gs_norms_embedding.size(0), gs_norms_embedding.size(1) - 1),
             device=device,
         )
-        generated_sequence = self.bos_token.expand(gs_norms_embedding.size(0), 1)
+        generated_sequence = self.bos_token.unsqueeze(0).expand(
+            gs_norms_embedding.size(0), 1, -1
+        )
         gs_norm_sim_context = torch.cat(
             [gs_norms_embedding, prev_action_embedding, current_action_embedding], dim=2
         )
 
         for i in range(basis_dim.max()):
             # embedding features for sequence generated so far
-            tgt = self.gs_norms_encoder.input_projection(generated_sequence)
+            tgt = generated_sequence
             tgt = self.gs_norms_encoder.pos_encoding(tgt)
             tgt = torch.cat(
                 [
@@ -252,7 +254,9 @@ class GSNormDecoder(nn.Module):
                 generated_sequence = torch.cat(
                     [
                         generated_sequence,
-                        predicted_gs_norm.detach(),
+                        self.gs_norms_encoder.input_projection(
+                            predicted_gs_norm.detach()
+                        ),
                     ],
                     dim=1,
                 )
@@ -274,9 +278,9 @@ class GSNormDecoder(nn.Module):
             -1, gs_norms_embedding.size(1), -1
         )
 
-        bos = self.bos_token.expand(target_gs_norms.size(0), 1)
-        tgt = torch.cat([bos, target_gs_norms], dim=1)
-        tgt = self.gs_norms_encoder.input_projection(tgt)
+        bos = self.bos_token.unsqueeze(0).expand(target_gs_norms.size(0), 1, -1)
+        tgt = self.gs_norms_encoder.input_projection(target_gs_norms)
+        tgt = torch.cat([bos, tgt], dim=1)
         tgt = self.gs_norms_encoder.pos_encoding(tgt)
         seq_len = tgt.size(1)
         tgt = torch.cat(
