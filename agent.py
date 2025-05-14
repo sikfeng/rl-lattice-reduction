@@ -240,7 +240,7 @@ class Agent(nn.Module):
                 or self.agent_config.policy_type == "joint-energy"
             ):
                 terminate_dist = torch.distributions.Bernoulli(termination_prob)
-                continue_dist = torch.distributions.Categorical(logits=continue_logits)
+                continue_dist = torch.distributions.Categorical(probs=continue_logits)
                 if self.training:
                     terminate = terminate_dist.sample()
                     continue_action = continue_dist.sample()
@@ -503,7 +503,7 @@ class Agent(nn.Module):
             auxiliary_predictor_losses_dict = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            termination_probs, continue_logits, values = self.actor_critic(states)
+            termination_probs, continue_probs, values = self.actor_critic(states)
 
             # Create action masks
             terminate_mask = actions == 0  # [batch_size]
@@ -516,7 +516,7 @@ class Agent(nn.Module):
             # Continue log probs (Categorical)
             continue_actions = actions[continue_mask] - 1  # adjust for 0-based index
             continue_dist = torch.distributions.Categorical(
-                logits=continue_logits[continue_mask]
+                probs=continue_probs[continue_mask]
             )
             continue_log_probs = continue_dist.log_prob(continue_actions)
 
@@ -852,7 +852,7 @@ class Agent(nn.Module):
                         self.agent_config.policy_type == "discrete"
                         or self.agent_config.policy_type == "joint-energy"
                     ):
-                        continue_prob = F.softmax(continue_logits[i], dim=-1)
+                        continue_prob = continue_logits[i]
                         continue_action = action[i] - 1  # adjust for 0-based index
                         metric["episode/actor_continue_logit"] = float(
                             continue_prob[continue_action]
@@ -916,9 +916,15 @@ class Agent(nn.Module):
                 {
                     "step": steps,
                     "action": int(action.squeeze()),
-                    "reward": {k: v.squeeze().detach().cpu().tolist() for k, v in reward.items()},
+                    "reward": {
+                        k: v.squeeze().detach().cpu().tolist()
+                        for k, v in reward.items()
+                    },
                     "termination_prob": float(termination_prob.squeeze()),
-                    "continue_logits": continue_logits.squeeze().detach().cpu().tolist(),
+                    "continue_logits": continue_logits.squeeze()
+                    .detach()
+                    .cpu()
+                    .tolist(),
                 }
             )
 
