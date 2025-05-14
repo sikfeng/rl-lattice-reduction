@@ -824,6 +824,9 @@ class Agent(nn.Module):
                             auxiliary_predictor_losses[key][i].mean()
                         )
 
+            if done.any():
+                next_state, next_info = self.env.reset(to_reset=done)
+
             self.state = next_state
             self.info = next_info
 
@@ -833,7 +836,7 @@ class Agent(nn.Module):
         self, batch: TensorDict[str, Union[torch.Tensor, TensorDict[str, torch.Tensor]]]
     ) -> Dict:
         self.eval()
-        state, info = self.env.reset(options=batch)
+        state, info = self.env.reset(states=batch)
         log_defect_history = [info["log_defect"].item()]
         shortest_length_history = [info["shortest_length"].item()]
         time_history = [info["time"].item()]

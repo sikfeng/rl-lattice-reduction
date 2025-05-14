@@ -3,9 +3,8 @@ from dataclasses import dataclass
 import math
 import multiprocessing as mp
 from time import process_time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-import fpylll
 from fpylll import BKZ, Enumeration, EnumerationError, FPLLL, GSO, IntegerMatrix, LLL
 from fpylll.tools.bkz_stats import dummy_tracer, normalize_tracer, Tracer
 from fpylll.util import adjust_radius_to_gh_bound
@@ -320,7 +319,9 @@ class ReductionEnvironment:
                 )
                 * 2
             )  # temp hack until I figure out how to properly represent allowable lattice dimensions
-            options = generate_random_basis(None, self.basis_dim, self.config.distribution)
+            options = generate_random_basis(
+                None, self.basis_dim, self.config.distribution
+            )
             options["basis"] = torch.tensor(options["basis"])
         else:
             self.basis_dim = options["basis"].size(-1)
@@ -397,10 +398,6 @@ class ReductionEnvironment:
         obs = self._get_observation()
         rewards = self._compute_reward()
         info = self._get_info()
-        done = self.terminated or self.truncated
-
-        if done:
-            obs, info = self.reset()
 
         return obs, rewards, self.terminated, self.truncated, info
 
@@ -453,7 +450,10 @@ class ReductionEnvironment:
         if self.action_history[-1] == 0:
             return True
 
-        if self.clean and self._action_to_block(self.action_history[-1]) == self.basis_dim:
+        if (
+            self.clean
+            and self._action_to_block(self.action_history[-1]) == self.basis_dim
+        ):
             return True
 
         return False
@@ -478,7 +478,9 @@ class ReductionEnvironment:
         diag = np.abs(np.diagonal(R, axis1=-2, axis2=-1))
         n = diag.shape[0]
 
-        log_gh = np.sum(np.log(diag)) / n - np.log(np.pi) / 2 - math.lgamma(n / 2 + 1) / n
+        log_gh = (
+            np.sum(np.log(diag)) / n - np.log(np.pi) / 2 - math.lgamma(n / 2 + 1) / n
+        )
         return np.exp(log_gh)
 
     @staticmethod
@@ -501,6 +503,10 @@ def _worker(work_remote, remote, config):
             cmd, data = work_remote.recv()
             if cmd == "reset":
                 obs, info = env.reset(data)
+                work_remote.send((obs, info))
+            elif cmd == "info":
+                obs = env._get_observation()
+                info = env._get_info()
                 work_remote.send((obs, info))
             elif cmd == "step":
                 obs, reward, terminated, truncated, info = env.step(data)
@@ -537,14 +543,24 @@ class VectorizedReductionEnvironment:
 
         self.closed = False
 
-    def reset(self, options: TensorDict = None) -> Tuple[TensorDict, TensorDict]:
-        if options is None:
-            options_list = [None] * self.batch_size
-        else:
-            options_list = options.unbind(dim=0)
+    def reset(
+        self, to_reset: Optional[List[bool]] = None, states: Optional[TensorDict] = None
+    ) -> Tuple[TensorDict, TensorDict]:
 
-        for remote, action in zip(self.remotes, options_list):
-            remote.send(("reset", action))
+        if states is None:
+            states_list = [None] * self.batch_size
+        else:
+            states_list = states.unbind(dim=0)
+
+        if to_reset is None:
+            to_reset = [True] * self.batch_size
+
+        for remote, reset_bool, state in zip(self.remotes, to_reset, states_list):
+            if reset_bool:
+                remote.send(("reset", state))
+            else:
+                remote.send(("info", None))
+
         results = [remote.recv() for remote in self.remotes]
         states, infos = zip(*results)
 
