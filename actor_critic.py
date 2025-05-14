@@ -74,19 +74,11 @@ class DiscretePolicyHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
 
-        self.termination_actor = nn.Sequential(
-            nn.Linear(self.feature_dim, self.hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, 1),
-            nn.Sigmoid(),
-            nn.Flatten(-2),
-        )
         self.actor = nn.Sequential(
             nn.Linear(self.feature_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, self.action_dim - 1),
+            nn.Linear(self.hidden_dim, self.action_dim),
         )
 
     def forward(
@@ -96,15 +88,13 @@ class DiscretePolicyHead(nn.Module):
         basis_dim: torch.Tensor,
         previous_action_unmodified: torch.Tensor,
     ) -> torch.Tensor:
-        termination_logit = self.termination_actor(features)
-
         logits = self.actor(features)
 
         # logits [batch_size, action_dim]
         # basis_dim [batch_size]
         # last_action [batch_size]
         indices = (
-            torch.arange(start=2, end=self.action_dim + 1, device=logits.device)
+            torch.arange(start=1, end=self.action_dim + 1, device=logits.device)
             .unsqueeze(0)
             .expand(features.size(0), -1)
         )
@@ -117,10 +107,13 @@ class DiscretePolicyHead(nn.Module):
         # mask entries which are False will be masked out
         # indices >= thresholds are entries not smaller than previous block size
         # indices <= basis_dim are entries with block size smaller than dim
-        valid_mask = (indices >= previous_action_ + 1) & (indices <= basis_dim_)
+        valid_mask = ((indices >= previous_action_ + 1) & (indices <= basis_dim_)) | (
+            indices == 1
+        )
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
+        probs = F.softmax(masked_logits, dim=-1)
 
-        return termination_logit, masked_logits
+        return probs
 
 
 class JointEnergyBasedPolicyHead(nn.Module):
@@ -140,14 +133,6 @@ class JointEnergyBasedPolicyHead(nn.Module):
         self.action_dim = action_dim
         self.index_embedding_dim = index_embedding_dim
 
-        self.termination_actor = nn.Sequential(
-            nn.Linear(self.feature_dim, self.hidden_dim),
-            nn.LeakyReLU(),
-            nn.Dropout(p=dropout_p),
-            nn.Linear(self.hidden_dim, 1),
-            nn.Sigmoid(),
-            nn.Flatten(-2),
-        )
         self.actor = nn.Sequential(
             nn.Linear(self.feature_dim + self.index_embedding_dim, self.hidden_dim),
             nn.LeakyReLU(),
@@ -169,11 +154,9 @@ class JointEnergyBasedPolicyHead(nn.Module):
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
         previous_action_unmodified: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        termination_logit = self.termination_actor(features)
-
+    ) -> torch.Tensor:
         indices = (
-            torch.arange(start=2, end=basis_dim.max() + 1, device=features.device)
+            torch.arange(start=1, end=basis_dim.max() + 1, device=features.device)
             .float()
             .unsqueeze(0)
             .expand(features.size(0), -1)
@@ -191,10 +174,13 @@ class JointEnergyBasedPolicyHead(nn.Module):
         )
         basis_dim_ = basis_dim.unsqueeze(1).expand(logits.size(0), 1)
         # mask entries which are False will be masked out
-        valid_mask = (indices >= previous_action_ + 1) & (indices <= basis_dim_)
+        valid_mask = ((indices >= previous_action_ + 1) & (indices <= basis_dim_)) | (
+            indices == 1
+        )
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
+        probs = F.softmax(masked_logits, dim=-1)
 
-        return termination_logit, masked_logits
+        return probs
 
 
 class ActorCritic(nn.Module):
@@ -289,14 +275,20 @@ class ActorCritic(nn.Module):
             [gs_norms_embedding.mean(dim=1), prev_action_embedding.mean(dim=1)], dim=1
         )
 
-        termination_prob, block_output = self.actor(
-            combined, previous_action, basis_dim, previous_action_unmodified
-        )
-        return (
-            termination_prob,
-            block_output,
-            self.critic(combined).squeeze(-1),
-        )
+        if self.policy_type == "continuous":
+            termination_prob, block_output = self.actor(
+                combined, previous_action, basis_dim, previous_action_unmodified
+            )
+            return (
+                termination_prob,
+                block_output,
+                self.critic(combined).squeeze(-1),
+            )
+        elif self.policy_type == "discrete" or self.policy_type == "joint-energy":
+            probs = self.actor(
+                combined, previous_action, basis_dim, previous_action_unmodified
+            )
+            return probs, self.critic(combined).squeeze(-1)
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
