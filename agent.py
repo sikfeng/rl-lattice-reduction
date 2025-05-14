@@ -178,9 +178,9 @@ class Agent(nn.Module):
         with torch.no_grad():
             basis_dim = state["basis_dim"]
             last_action = state["last_action"]
-            termination_prob, continue_logits, value = self.actor_critic(state)
 
             if self.agent_config.policy_type == "continuous":
+                termination_prob, continue_logits, value = self.actor_critic(state)
                 block_size_float, block_size_std = continue_logits.unbind(dim=1)
                 if self.training:
                     terminate_dist = torch.distributions.Bernoulli(termination_prob)
@@ -235,34 +235,22 @@ class Agent(nn.Module):
                     block_size - 1,
                 )  # consolidate action ids
 
+                return action, log_probs, value, termination_prob, continue_logits
+
             elif (
                 self.agent_config.policy_type == "discrete"
                 or self.agent_config.policy_type == "joint-energy"
             ):
-                terminate_dist = torch.distributions.Bernoulli(termination_prob)
-                continue_dist = torch.distributions.Categorical(probs=continue_logits)
+                probs, value = self.actor_critic(state)
+                action_dist = torch.distributions.Categorical(probs=probs)
                 if self.training:
-                    terminate = terminate_dist.sample()
-                    continue_action = continue_dist.sample()
+                    action = action_dist.sample()
                 else:
-                    terminate = (termination_prob > 0.5).float()
-                    continue_action = torch.argmax(continue_logits, dim=-1)
+                    action = torch.argmax(probs, dim=-1)
 
-                termination_log_probs = terminate_dist.log_prob(terminate)
-                continue_log_probs = continue_dist.log_prob(continue_action)
+                log_probs = action_dist.log_prob(action)
 
-                action = torch.where(
-                    termination_prob > 0.5,
-                    torch.tensor(0, device=continue_action.device),
-                    continue_action + 1,
-                )
-                log_probs = torch.where(
-                    termination_prob > 0.5,
-                    termination_log_probs,  # only termination log prob matters
-                    termination_log_probs + continue_log_probs,
-                )
-
-            return action, log_probs, value, termination_prob, continue_logits
+                return action, log_probs, value, probs
 
     def _update_continuous(self) -> Dict[str, float]:
         self.train()
@@ -480,8 +468,8 @@ class Agent(nn.Module):
         dones = batch["done"]
 
         with torch.no_grad():
-            _, _, values = self.actor_critic(states)
-            _, _, next_values = self.actor_critic(next_states)
+            _, values = self.actor_critic(states)
+            _, next_values = self.actor_critic(next_states)
 
         advantages, returns = generalized_advantage_estimate(
             gamma=self.agent_config.ppo_config.gamma,
@@ -494,8 +482,6 @@ class Agent(nn.Module):
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         actor_losses, critic_losses, entropy_losses, total_losses = [], [], [], []
-        term_losses, continue_losses = [], []
-        term_entropies, continue_entropies = [], []
         clip_fractions = []
         approx_kls = []
 
@@ -503,26 +489,10 @@ class Agent(nn.Module):
             auxiliary_predictor_losses_dict = defaultdict(list)
 
         for _ in range(self.agent_config.ppo_config.epochs):
-            termination_probs, continue_probs, values = self.actor_critic(states)
+            probs, values = self.actor_critic(states)
 
-            # Create action masks
-            terminate_mask = actions == 0  # [batch_size]
-            continue_mask = ~terminate_mask  # [batch_size]
-
-            # Termination log probs (Bernoulli)
-            term_dist = torch.distributions.Bernoulli(probs=termination_probs)
-            term_log_probs = term_dist.log_prob(terminate_mask.float())
-
-            # Continue log probs (Categorical)
-            continue_actions = actions[continue_mask] - 1  # adjust for 0-based index
-            continue_dist = torch.distributions.Categorical(
-                probs=continue_probs[continue_mask]
-            )
-            continue_log_probs = continue_dist.log_prob(continue_actions)
-
-            # Combine log probs
-            new_log_probs = term_log_probs
-            new_log_probs[continue_mask] += continue_log_probs
+            action_dist = torch.distributions.Categorical(probs=probs)
+            new_log_probs = action_dist.log_prob(actions)
 
             ratios = (new_log_probs - old_log_probs).exp()
 
@@ -538,13 +508,8 @@ class Agent(nn.Module):
             actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.mse_loss(values, returns.squeeze(1))
 
-            term_entropy = term_dist.entropy().mean()
-
-            continue_entropy_all = torch.zeros(actions.size(0), device=self.device)
-            continue_entropy_all[continue_mask] = continue_dist.entropy()
-            continue_entropy = continue_entropy_all.mean()
-            # additivity property holds because termination and continue action are independent
-            entropy_loss = -(term_entropy + continue_entropy)
+            action_entropy = action_dist.entropy().mean()
+            entropy_loss = -action_entropy
 
             actor_critic_loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
             if self.agent_config.auxiliary_predictor:
@@ -588,23 +553,6 @@ class Agent(nn.Module):
             entropy_losses.append(entropy_loss.item())
             total_losses.append(actor_critic_loss.item())
 
-            with torch.no_grad():
-                term_loss = (
-                    -torch.min(surr1[terminate_mask], surr2[terminate_mask]).mean()
-                    if terminate_mask.any()
-                    else torch.tensor(0.0)
-                )
-                continue_loss = (
-                    -torch.min(surr1[continue_mask], surr2[continue_mask]).mean()
-                    if continue_mask.any()
-                    else torch.tensor(0.0)
-                )
-
-            term_losses.append(term_loss.item())
-            continue_losses.append(continue_loss.item())
-            term_entropies.append(term_entropy.item())
-            continue_entropies.append(continue_entropy.item())
-
             clipped = (ratios < 1 - self.agent_config.ppo_config.clip_epsilon) | (
                 ratios > 1 + self.agent_config.ppo_config.clip_epsilon
             )
@@ -622,10 +570,6 @@ class Agent(nn.Module):
         metrics = {
             "update/avg_actor_loss": np.mean(actor_losses),
             "update/avg_critic_loss": np.mean(critic_losses),
-            "update/avg_term_loss": np.mean(term_losses),
-            "update/avg_continue_loss": np.mean(continue_losses),
-            "update/avg_term_entropy": np.mean(term_entropies),
-            "update/avg_continue_entropy": np.mean(continue_entropies),
             "update/avg_entropy": np.mean(entropy_losses),
             "update/total_loss": np.mean(total_losses),
             "update/approx_kl": np.mean(approx_kls),
@@ -775,9 +719,16 @@ class Agent(nn.Module):
 
     def collect_experiences(self) -> Dict[str, float]:
         with torch.no_grad():
-            action, log_prob, value, terminate_prob, continue_logits = self.get_action(
-                self.state
-            )
+            if self.agent_config.policy_type == "continuous":
+                action, log_prob, value, terminate_prob, continue_logits = (
+                    self.get_action(self.state)
+                )
+            elif (
+                self.agent_config.policy_type == "discrete"
+                or self.agent_config.policy_type == "joint-energy"
+            ):
+                action, log_prob, value, probs = self.get_action(self.state)
+
             next_state, rewards, terminated, truncated, next_info = self.env.step(
                 action
             )
@@ -835,9 +786,11 @@ class Agent(nn.Module):
                 }
 
                 # Log actor logits based on prediction type
-                metric["episode/actor_terminate_prob"] = float(terminate_prob[i])
                 if action[i] != 0:
                     if self.agent_config.policy_type == "continuous":
+                        metric["episode/actor_terminate_prob"] = float(
+                            terminate_prob[i]
+                        )
                         metric.update(
                             {
                                 "episode/actor_block_mean_logit": float(
@@ -852,11 +805,7 @@ class Agent(nn.Module):
                         self.agent_config.policy_type == "discrete"
                         or self.agent_config.policy_type == "joint-energy"
                     ):
-                        continue_prob = continue_logits[i]
-                        continue_action = action[i] - 1  # adjust for 0-based index
-                        metric["episode/actor_continue_logit"] = float(
-                            continue_prob[continue_action]
-                        )
+                        metric["episode/action_prob"] = float(probs[i][action[i]])
 
                 metrics.append(metric)
 
@@ -901,7 +850,7 @@ class Agent(nn.Module):
             state = state.to(self.device)
             info = info.to(self.device)
 
-            action, _, _, termination_prob, continue_logits = self.get_action(state)
+            action, _, _, probs = self.get_action(state)
             next_state, reward, terminated, truncated, next_info = self.env.step(action)
 
             log_defect_history.append(next_info["log_defect"].item())
@@ -920,11 +869,7 @@ class Agent(nn.Module):
                         k: v.squeeze().detach().cpu().tolist()
                         for k, v in reward.items()
                     },
-                    "termination_prob": float(termination_prob.squeeze()),
-                    "continue_logits": continue_logits.squeeze()
-                    .detach()
-                    .cpu()
-                    .tolist(),
+                    "probs": probs.squeeze().detach().cpu().tolist(),
                 }
             )
 

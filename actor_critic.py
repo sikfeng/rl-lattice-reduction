@@ -113,7 +113,7 @@ class DiscretePolicyHead(nn.Module):
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
         probs = F.softmax(masked_logits, dim=-1)
 
-        return probs[:, 0], probs[:, 1:]
+        return probs
 
 
 class JointEnergyBasedPolicyHead(nn.Module):
@@ -154,7 +154,7 @@ class JointEnergyBasedPolicyHead(nn.Module):
         previous_action: torch.Tensor,
         basis_dim: torch.Tensor,
         previous_action_unmodified: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         indices = (
             torch.arange(start=1, end=basis_dim.max() + 1, device=features.device)
             .float()
@@ -180,7 +180,7 @@ class JointEnergyBasedPolicyHead(nn.Module):
         masked_logits = logits.masked_fill(~valid_mask, float("-inf"))
         probs = F.softmax(masked_logits, dim=-1)
 
-        return probs[:, 0], probs[:, 1:]
+        return probs
 
 
 class ActorCritic(nn.Module):
@@ -275,14 +275,20 @@ class ActorCritic(nn.Module):
             [gs_norms_embedding.mean(dim=1), prev_action_embedding.mean(dim=1)], dim=1
         )
 
-        termination_prob, block_output = self.actor(
-            combined, previous_action, basis_dim, previous_action_unmodified
-        )
-        return (
-            termination_prob,
-            block_output,
-            self.critic(combined).squeeze(-1),
-        )
+        if self.policy_type == "continuous":
+            termination_prob, block_output = self.actor(
+                combined, previous_action, basis_dim, previous_action_unmodified
+            )
+            return (
+                termination_prob,
+                block_output,
+                self.critic(combined).squeeze(-1),
+            )
+        elif self.policy_type == "discrete" or self.policy_type == "joint-energy":
+            probs = self.actor(
+                combined, previous_action, basis_dim, previous_action_unmodified
+            )
+            return probs, self.critic(combined).squeeze(-1)
 
     def preprocess_inputs(self, tensordict: TensorDict) -> TensorDict:
         basis = tensordict["basis"]  # [batch_size, max_basis_dim, max_basis_dim]
