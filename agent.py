@@ -826,6 +826,8 @@ class Agent(nn.Module):
 
             if done.any():
                 next_state, next_info = self.env.reset(to_reset=done)
+                next_state = next_state.to(self.device)
+                next_info = next_info.to(self.device)
 
             self.state = next_state
             self.info = next_info
